@@ -346,7 +346,9 @@ PAGINA = """<!doctype html>
   .totalMesa{text-align:right; font-weight:700; color:var(--bordo);
              padding-top:8px}
   /* --- catálogo --- */
-  #chips{display:flex; gap:8px; overflow-x:auto; padding:2px 0 10px}
+  #chips,#chipsPara{display:flex; gap:8px; overflow-x:auto; padding:2px 0 10px}
+  #chipsPara{padding-bottom:2px}
+  #chipsPara .activa{background:var(--naranja); border-color:var(--naranja)}
   .chip{border:1px solid var(--bordo); color:var(--bordo); background:#fff;
         border-radius:999px; padding:7px 14px; font-size:.85rem;
         white-space:nowrap; font-family:inherit}
@@ -423,6 +425,10 @@ PAGINA = """<!doctype html>
     <div id="yaPedido"></div>
     <div class="totalMesa" id="totalMesa"></div>
   </div>
+  <div class="tarjeta">
+    <h2 style="margin-top:0">Cargar el pedido para</h2>
+    <div id="chipsPara"></div>
+  </div>
   <div id="chips"></div>
   <input id="inBuscar" placeholder="&#128269; Buscar producto…" autocomplete="off">
   <div id="listaProd" style="margin-top:10px"></div>
@@ -442,6 +448,7 @@ PAGINA = """<!doctype html>
 const $ = id => document.getElementById(id);
 let estado = null, mesa = null, detalle = null;
 let carrito = [], cat = "Todas", filtro = "", vista = "mesas";
+let paraQuien = 0;  // 0 = toda la mesa, 1..N = comensal elegido
 
 const fmtNum = new Intl.NumberFormat("es-UY",
   {minimumFractionDigits: 0, maximumFractionDigits: 2});
@@ -500,7 +507,7 @@ async function abrirMesa(n) {
     detalle = await api("/api/mesa?n=" + n);
     if (!estado) estado = await api("/api/estado");
   } catch (e) { alert(e.message); return; }
-  mesa = n; carrito = []; cat = "Todas"; filtro = "";
+  mesa = n; carrito = []; cat = "Todas"; filtro = ""; paraQuien = 0;
   $("inBuscar").value = "";
   $("inMozo").value = detalle.mozo || localStorage.mozo || "";
   $("inCom").value = detalle.comensales > 0 ? detalle.comensales : 1;
@@ -525,9 +532,25 @@ function render() {
   }
   $("titulo").textContent = "Mesa " + mesa;
   renderYaPedido();
+  renderPara();
   renderChips();
   renderProductos();
   renderBarra();
+}
+
+function renderPara() {
+  const caja = $("chipsPara");
+  caja.replaceChildren();
+  const nCom = Math.max(1, parseInt($("inCom").value) || 1);
+  if (paraQuien > nCom) paraQuien = 0;
+  const opciones = [["Toda la mesa", 0]];
+  for (let c = 1; c <= nCom; c++) opciones.push(["Comensal " + c, c]);
+  for (const [texto, valor] of opciones) {
+    const b = el("button", "chip" + (valor === paraQuien ? " activa" : ""),
+                 texto);
+    b.onclick = () => { paraQuien = valor; renderPara(); };
+    caja.appendChild(b);
+  }
 }
 
 function renderYaPedido() {
@@ -590,10 +613,11 @@ function renderProductos() {
 /* ---------------- carrito ---------------- */
 
 function agregar(p) {
-  const existente = carrito.find(i => i.id === p.id && i.comensal === 0);
+  const existente = carrito.find(
+    i => i.id === p.id && i.comensal === paraQuien);
   if (existente) existente.cantidad = Math.min(existente.cantidad + 1, 99);
   else carrito.push({id: p.id, nombre: p.nombre, precio: p.precio,
-                     cantidad: 1, comensal: 0});
+                     cantidad: 1, comensal: paraQuien});
   renderProductos();
   renderBarra();
 }
@@ -692,7 +716,7 @@ $("btnCarrito").onclick = () => {
   c.style.display = c.style.display === "block" ? "none" : "block";
 };
 $("inBuscar").oninput = e => { filtro = e.target.value; renderProductos(); };
-$("inCom").onchange = renderCarrito;
+$("inCom").onchange = () => { renderPara(); renderCarrito(); };
 
 setInterval(() => {
   if (vista === "mesas") cargarEstado().catch(() => {});
