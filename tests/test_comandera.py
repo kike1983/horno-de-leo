@@ -138,6 +138,23 @@ assert POST("/api/pedido", {"mesa": 1, "items": [
 assert GET("/api/estado")["mesas"][0]["abierta"] is False
 print("OK rechazos: mesa inexistente, sin ítems, producto inexistente")
 
+# --- IP fija en Windows: máscara y contenido de los .bat
+assert r.mascara_desde_prefijo(24) == "255.255.255.0"
+assert r.mascara_desde_prefijo(25) == "255.255.255.128"
+assert r.mascara_desde_prefijo(16) == "255.255.0.0"
+bat = r.armar_bat_ip_fija("Wi-Fi", "192.168.1.50", 24, "192.168.1.1",
+                          "192.168.1.1,8.8.8.8")
+assert ('netsh interface ipv4 set address name="Wi-Fi" '
+        'static 192.168.1.50 255.255.255.0 192.168.1.1') in bat
+assert 'set dnsservers name="Wi-Fi" static 192.168.1.1 primary' in bat
+assert 'add dnsservers name="Wi-Fi" 8.8.8.8 index=2' in bat
+bat = r.armar_bat_ip_fija("Ethernet", "10.0.0.7", 24, "10.0.0.1", "")
+assert 'static 10.0.0.1 primary' in bat  # sin DNS conocido usa el router
+bat = r.armar_bat_ip_dhcp("Wi-Fi")
+assert 'set address name="Wi-Fi" dhcp' in bat
+assert 'set dnsservers name="Wi-Fi" dhcp' in bat
+print("OK IP fija Windows: máscaras y .bat de netsh bien armados")
+
 comandera.detener(srv)
 shutil.rmtree(FAKEHOME, ignore_errors=True)
 print("\nTODO OK — comandera funcionando")

@@ -19,6 +19,7 @@ import os
 import sys
 import csv
 import glob
+import json
 import socket
 import shutil
 import sqlite3
@@ -370,6 +371,87 @@ def deps_comandera():
     return {"db": db, "cfg_get": cfg_get, "centrar": centrar,
             "imprimir_texto": imprimir_texto, "categorias": CATEGORIAS,
             "ancho": ANCHO_TICKET}
+
+
+# ---------------------------------------------------------------- IP fija (Windows)
+# Para que la dirección de la comandera no cambie, el programa puede fijar
+# la IP actual de la PC en Windows (netsh necesita permiso de administrador,
+# así que se genera un .bat y se ejecuta con elevación/UAC).
+
+_PS_RED = (
+    "Get-NetIPConfiguration | Where-Object {$_.IPv4DefaultGateway} "
+    "| Select-Object -First 1 InterfaceAlias,"
+    "@{n='IP';e={@($_.IPv4Address)[0].IPAddress}},"
+    "@{n='Prefijo';e={@($_.IPv4Address)[0].PrefixLength}},"
+    "@{n='Puerta';e={@($_.IPv4DefaultGateway)[0].NextHop}},"
+    "@{n='DNS';e={($_.DNSServer | Where-Object {$_.AddressFamily -eq 2})"
+    ".ServerAddresses -join ','}} | ConvertTo-Json")
+
+
+def datos_red_windows():
+    """Conexión activa en Windows: alias, IP, prefijo, puerta de enlace, DNS."""
+    salida = subprocess.run(
+        ["powershell", "-NoProfile", "-Command", _PS_RED],
+        capture_output=True, text=True, timeout=25,
+        creationflags=0x08000000).stdout  # sin ventana de consola
+    info = json.loads(salida)
+    if isinstance(info, list):
+        info = info[0]
+    return info
+
+
+def mascara_desde_prefijo(prefijo):
+    """24 -> 255.255.255.0"""
+    bits = (0xffffffff << (32 - int(prefijo))) & 0xffffffff
+    return ".".join(str((bits >> s) & 0xff) for s in (24, 16, 8, 0))
+
+
+def armar_bat_ip_fija(alias, ip, prefijo, puerta, dns):
+    """Arma el .bat que deja fija la configuración de red actual."""
+    mascara = mascara_desde_prefijo(prefijo)
+    lineas = [
+        "@echo off", "chcp 65001 >nul",
+        f"echo Fijando la IP {ip} en \"{alias}\" ...",
+        f"netsh interface ipv4 set address name=\"{alias}\" "
+        f"static {ip} {mascara} {puerta}",
+    ]
+    servidores = [s.strip() for s in (dns or "").split(",") if s.strip()]
+    if not servidores:
+        servidores = [puerta]  # sin DNS conocido: usar el router
+    lineas.append(f"netsh interface ipv4 set dnsservers name=\"{alias}\" "
+                  f"static {servidores[0]} primary")
+    for i, servidor in enumerate(servidores[1:4], start=2):
+        lineas.append(f"netsh interface ipv4 add dnsservers name=\"{alias}\" "
+                      f"{servidor} index={i}")
+    lineas += ["echo.",
+               f"echo Listo: esta PC va a tener siempre la direccion {ip}",
+               "pause"]
+    return "\r\n".join(lineas) + "\r\n"
+
+
+def armar_bat_ip_dhcp(alias):
+    """Arma el .bat que vuelve a la configuración automática (DHCP)."""
+    lineas = [
+        "@echo off", "chcp 65001 >nul",
+        f"echo Volviendo \"{alias}\" a IP automatica (DHCP) ...",
+        f"netsh interface ipv4 set address name=\"{alias}\" dhcp",
+        f"netsh interface ipv4 set dnsservers name=\"{alias}\" dhcp",
+        "echo.", "echo Listo.", "pause"]
+    return "\r\n".join(lineas) + "\r\n"
+
+
+def ejecutar_bat_admin(texto_bat):
+    """Guarda el .bat y lo ejecuta pidiendo permiso de administrador (UAC).
+    Devuelve None si arrancó bien o un mensaje de error."""
+    ruta = os.path.join(APP_DIR, "configurar_ip.bat")
+    with open(ruta, "w", encoding="utf-8") as f:
+        f.write(texto_bat)
+    import ctypes
+    r = ctypes.windll.shell32.ShellExecuteW(None, "runas", ruta, None, None, 1)
+    if r <= 32:
+        return ("No se pudo ejecutar (¿se canceló el permiso de "
+                f"administrador?). El archivo quedó en:\n{ruta}")
+    return None
 
 
 def abrir_carpeta(ruta):
@@ -984,6 +1066,10 @@ class App(tk.Tk):
 
         self.after(600, self._avisar_faltantes)
         self.after(4000, self._auto_refresco)
+        # primera vez en Windows: ofrecer dejar fija la IP de la PC
+        if sys.platform.startswith("win") \
+                and cfg_get("ip_fija_ofrecida", "0") != "1":
+            self.after(1500, self._ofrecer_ip_fija)
 
     # ------------------------------------------------ comandera de mozos
 
@@ -1594,6 +1680,20 @@ class App(tk.Tk):
                             "una app con su ícono.",
                   foreground=COL_MUTED, wraplength=380, justify="left")\
             .grid(row=5, column=0, columnspan=2, sticky="w")
+        fila_ip = ttk.Frame(com)
+        fila_ip.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        if sys.platform.startswith("win"):
+            ttk.Button(fila_ip, text="🔒  Fijar la IP de esta PC",
+                       command=self._fijar_ip_windows).pack(side="left")
+            ttk.Button(fila_ip, text="↩  Volver a IP automática",
+                       command=self._ip_automatica_windows)\
+                .pack(side="left", padx=8)
+        else:
+            ttk.Label(fila_ip, text="Para que la dirección no cambie, fijá la "
+                                    "IP de esta PC (en Windows hay un botón "
+                                    "acá; en Linux, reservala en el router).",
+                      foreground=COL_MUTED, wraplength=380,
+                      justify="left").pack(side="left")
         self._actualizar_url_comandera()
 
         # --- mesas y mozos
@@ -1669,6 +1769,70 @@ class App(tk.Tk):
         cfg_set("imp_corte", "1" if self.var_imp_corte.get() else "0")
         messagebox.showinfo("Impresora", "Configuración de impresora guardada.",
                             parent=self)
+
+    def _fijar_ip_windows(self):
+        try:
+            red = datos_red_windows()
+            alias, ip = red["InterfaceAlias"], red["IP"]
+            prefijo, puerta = red["Prefijo"], red["Puerta"]
+            dns = red.get("DNS", "")
+        except Exception:
+            messagebox.showerror(
+                "IP fija", "No se pudo leer la configuración de red de "
+                "Windows.\n¿La PC está conectada a la red del local?",
+                parent=self)
+            return
+        if not messagebox.askyesno(
+                "Fijar IP de esta PC",
+                "Se va a dejar fija la configuración de red actual:\n\n"
+                f"    Conexión: {alias}\n"
+                f"    IP fija: {ip}\n"
+                f"    Máscara: {mascara_desde_prefijo(prefijo)}\n"
+                f"    Puerta de enlace: {puerta}\n"
+                f"    DNS: {dns or puerta}\n\n"
+                "Así la dirección de la comandera no cambia nunca.\n"
+                "Windows va a pedir permiso de administrador.\n¿Continuar?",
+                parent=self):
+            return
+        error = ejecutar_bat_admin(
+            armar_bat_ip_fija(alias, ip, prefijo, puerta, dns))
+        if error:
+            messagebox.showwarning("IP fija", error, parent=self)
+        else:
+            messagebox.showinfo(
+                "IP fija",
+                "Aceptá el permiso de administrador en la ventana que abre "
+                "Windows.\n\nLa dirección para los mozos queda siempre en:\n"
+                f"http://{ip}:{cfg_get('mozos_puerto', '8750')}",
+                parent=self)
+
+    def _ip_automatica_windows(self):
+        try:
+            alias = datos_red_windows()["InterfaceAlias"]
+        except Exception:
+            messagebox.showerror("IP fija", "No se pudo leer la configuración "
+                                 "de red de Windows.", parent=self)
+            return
+        if not messagebox.askyesno(
+                "IP automática",
+                f'La conexión "{alias}" vuelve a IP automática (DHCP).\n'
+                "La dirección de la comandera podría cambiar.\n¿Continuar?",
+                parent=self):
+            return
+        error = ejecutar_bat_admin(armar_bat_ip_dhcp(alias))
+        if error:
+            messagebox.showwarning("IP fija", error, parent=self)
+
+    def _ofrecer_ip_fija(self):
+        cfg_set("ip_fija_ofrecida", "1")
+        if messagebox.askyesno(
+                "Comandera — IP fija",
+                "Para que la dirección que usan los mozos no cambie nunca, "
+                "conviene dejar fija la IP de esta PC.\n\n"
+                "¿Configurarla ahora? (Windows va a pedir permiso de "
+                "administrador; también se puede hacer después desde "
+                "Configuración → Comandera)", parent=self):
+            self._fijar_ip_windows()
 
     def _guardar_comandera(self):
         puerto = self.var_mz_puerto.get().strip()
