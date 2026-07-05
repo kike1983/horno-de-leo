@@ -98,15 +98,34 @@ assert detalle["mozo"] == "Caro" and len(detalle["items"]) == 2
 assert detalle["total"] == resp["total"]
 print("OK /api/mesa")
 
-# --- rechazo por falta de stock (queda 1 baklava, pido 5) y nada cambia
+# --- segundo envío a la misma mesa (un comensal agrega algo después):
+#     se suma a la cuenta y la comanda nueva trae SOLO lo agregado
+total_previo = resp["total"]
+code, resp = POST("/api/pedido", {
+    "mesa": 3, "mozo": "Caro", "comensales": 3,
+    "items": [{"id": pid_baklava, "cantidad": 1, "comensal": 3}]})
+assert code == 200 and resp["total"] == total_previo + 190, resp
+con = r.db()
+assert con.execute("SELECT COUNT(*) FROM pedidos WHERE mesa=3").fetchone()[0] == 3
+assert con.execute("SELECT comensales FROM mesas WHERE numero=3").fetchone()[0] == 3
+assert con.execute("SELECT stock FROM productos WHERE id=?",
+                   (pid_baklava,)).fetchone()[0] == 0
+con.close()
+comandas = sorted(glob.glob(os.path.join(r.RECIBOS_DIR, "comanda_*.txt")))
+assert len(comandas) == 2
+texto = open(comandas[-1], encoding="utf-8").read()
+assert " 1 x Baklava  (comensal 3)" in texto and "Shawarma" not in texto
+print("OK agregar después: suma a la cuenta y comanda solo con lo nuevo")
+
+# --- rechazo por falta de stock (no queda baklava, pido 5) y nada cambia
 code, resp = POST("/api/pedido", {
     "mesa": 3, "mozo": "Caro",
     "items": [{"id": pid_baklava, "cantidad": 5, "comensal": 0}]})
 assert code == 409 and "Baklava" in resp["error"], (code, resp)
 con = r.db()
 assert con.execute("SELECT stock FROM productos WHERE id=?",
-                   (pid_baklava,)).fetchone()[0] == 1
-assert con.execute("SELECT COUNT(*) FROM pedidos WHERE mesa=3").fetchone()[0] == 2
+                   (pid_baklava,)).fetchone()[0] == 0
+assert con.execute("SELECT COUNT(*) FROM pedidos WHERE mesa=3").fetchone()[0] == 3
 con.close()
 print("OK rechazo por stock insuficiente (sin cambios en la base)")
 
