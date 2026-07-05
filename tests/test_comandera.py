@@ -81,6 +81,7 @@ assert con.execute("SELECT COUNT(*) FROM pedidos WHERE mesa=3").fetchone()[0] ==
 assert con.execute("SELECT stock FROM productos WHERE id=?",
                    (pid_baklava,)).fetchone()[0] == 1
 con.close()
+assert ("pedido", 3) in comandera.eventos_pendientes()  # aviso para la campana
 print("OK pedido guardado: mesa 3 abierta, mozo Caro, stock descontado")
 
 # --- la comanda de cocina quedó guardada (la impresora no existe)
@@ -138,12 +139,15 @@ assert "Mozo/a: Caro" in texto
 print("OK la mesa conserva al mozo que la abrió (Caro, no Juan)")
 
 # --- pedir la cuenta desde el celular (y anular el aviso)
+comandera.eventos_pendientes()  # descartar avisos previos
 code, resp = POST("/api/cuenta", {"mesa": 3})
 assert code == 200 and resp["cuenta"] is True
+assert comandera.eventos_pendientes() == [("cuenta", 3)]  # campana en la PC
 assert GET("/api/estado")["mesas"][2]["cuenta"] is True
 assert GET("/api/mesa?n=3")["cuenta"] is True
 code, resp = POST("/api/cuenta", {"mesa": 3, "pedir": False})
 assert code == 200 and resp["cuenta"] is False
+assert comandera.eventos_pendientes() == []  # anular no hace sonar nada
 assert GET("/api/estado")["mesas"][2]["cuenta"] is False
 assert POST("/api/cuenta", {"mesa": 1})[0] == 400    # mesa sin pedidos
 assert POST("/api/cuenta", {"mesa": 99})[0] == 404   # mesa inexistente

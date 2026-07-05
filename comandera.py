@@ -30,6 +30,24 @@ PUERTO_DEFECTO = 8750
 # imprimir_texto, categorias, ancho
 _d = {}
 
+# avisos para la interfaz de la PC (campana): los llena el hilo del
+# servidor y los retira la app cada segundo
+_eventos = []
+_eventos_lock = threading.Lock()
+
+
+def _avisar(tipo, mesa):
+    with _eventos_lock:
+        _eventos.append((tipo, mesa))
+
+
+def eventos_pendientes():
+    """Devuelve y limpia los avisos acumulados: [("pedido"|"cuenta", mesa)]."""
+    with _eventos_lock:
+        pendientes = _eventos[:]
+        _eventos.clear()
+    return pendientes
+
 
 def ip_local():
     """IP de esta PC en la red local (la que hay que abrir en el celular)."""
@@ -186,6 +204,7 @@ def _recibir_pedido(datos):
     _imprimir_comanda(mesa, mozo_actual or mozo,
                       [(cant, nombre, comensal)
                        for _, nombre, _, cant, comensal, _ in filas])
+    _avisar("pedido", mesa)
     return 200, {"ok": True, "total": total}
 
 
@@ -211,6 +230,8 @@ def _pedir_cuenta(datos):
         con.commit()
     finally:
         con.close()
+    if pedir:
+        _avisar("cuenta", mesa)
     return 200, {"ok": True, "cuenta": bool(pedir)}
 
 

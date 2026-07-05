@@ -1108,6 +1108,7 @@ class App(tk.Tk):
 
         self.after(600, self._avisar_faltantes)
         self.after(4000, self._auto_refresco)
+        self.after(1000, self._escuchar_avisos)
         # primera vez en Windows: ofrecer dejar fija la IP de la PC
         if sys.platform.startswith("win") \
                 and cfg_get("ip_fija_ofrecida", "0") != "1":
@@ -1156,6 +1157,29 @@ class App(tk.Tk):
         except tk.TclError:
             return
         self.after(4000, self._auto_refresco)
+
+    def _escuchar_avisos(self):
+        """Campana al llegar algo desde una comandera:
+        1 campanada = pedido nuevo, 3 campanadas = piden la cuenta."""
+        try:
+            for tipo, mesa in comandera.eventos_pendientes():
+                hora = datetime.datetime.now().strftime("%H:%M")
+                if tipo == "cuenta":
+                    self._campana(3)
+                    self.lbl_aviso.config(
+                        text=f"🧾 La mesa {mesa} pide la cuenta  ({hora})")
+                else:
+                    self._campana(1)
+                    self.lbl_aviso.config(
+                        text=f"🛎 Pedido nuevo en la mesa {mesa}  ({hora})")
+        except tk.TclError:
+            return
+        self.after(1000, self._escuchar_avisos)
+
+    def _campana(self, veces):
+        self.bell()
+        if veces > 1:
+            self.after(300, lambda: self._campana(veces - 1))
 
     # ------------------------------------------------ estilos
 
@@ -1232,10 +1256,15 @@ class App(tk.Tk):
         self.frame_grilla = ttk.Frame(self.tab_mesas, style="Panel.TFrame")
         self.frame_grilla.pack(fill="both", expand=True)
         leyenda = ttk.Frame(self.tab_mesas, style="Panel.TFrame")
-        leyenda.pack(anchor="w", pady=(10, 0))
-        for color, texto in [(COL_LIBRE, "Libre"), (COL_OCUPADA, "Ocupada")]:
+        leyenda.pack(fill="x", pady=(10, 0))
+        for color, texto in [(COL_LIBRE, "Libre"), (COL_OCUPADA, "Ocupada"),
+                             (COL_ACCENT2, "Pide la cuenta")]:
             tk.Label(leyenda, text="  ", bg=color).pack(side="left", padx=(10, 3))
             ttk.Label(leyenda, text=texto, style="Panel.TLabel").pack(side="left")
+        self.lbl_aviso = ttk.Label(leyenda, text="", style="Panel.TLabel",
+                                   foreground=COL_ACCENT2,
+                                   font=(FONT, 10, "bold"))
+        self.lbl_aviso.pack(side="right", padx=(0, 10))
         self.refrescar_mesas()
 
     def _datos_mesas(self):
@@ -1253,11 +1282,6 @@ class App(tk.Tk):
             w.destroy()
         mesas, totales = self._datos_mesas()
         self._snap_mesas = (mesas, totales)
-        # campanita cuando una mesa nueva pide la cuenta desde el celular
-        pidiendo = {n for n, _, a, pc in mesas if a and pc}
-        if pidiendo - getattr(self, "_pidiendo_cuenta", set()):
-            self.bell()
-        self._pidiendo_cuenta = pidiendo
         columnas = 5
         for i in range(columnas):
             self.frame_grilla.columnconfigure(i, weight=1)
