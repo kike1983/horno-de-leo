@@ -1,0 +1,146 @@
+"""Prueba automatizada v2: flujo completo con carta real, stock, medios de
+pago, estadísticas, backup y generación ESC/POS."""
+import os, sys, shutil, sqlite3, datetime
+
+import tempfile
+FAKEHOME = tempfile.mkdtemp(prefix="horno_test_")
+shutil.rmtree(FAKEHOME, ignore_errors=True)
+os.makedirs(FAKEHOME)
+os.environ["HOME"] = FAKEHOME
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+import restaurante as r
+r.APP_DIR = os.path.join(FAKEHOME, ".restaurante_armenio")
+r.DB_PATH = os.path.join(r.APP_DIR, "restaurante.db")
+r.RECIBOS_DIR = os.path.join(r.APP_DIR, "recibos")
+r.BACKUPS_DIR = os.path.join(r.APP_DIR, "backups")
+
+r.init_db()
+
+# --- carta real cargada
+con = r.db()
+n_prod = con.execute("SELECT COUNT(*) FROM productos").fetchone()[0]
+shawarma = con.execute("SELECT precio, categoria FROM productos WHERE nombre='Shawarma de Pollo'").fetchone()
+baklava = con.execute("SELECT precio, categoria FROM productos WHERE nombre='Baklava'").fetchone()
+con.close()
+assert n_prod == len(r.CARTA_HORNO_DE_LEO) == 42, n_prod
+assert shawarma == (490, "Menú") and baklava == (190, "Postre")
+assert r.cfg_get("nombre") == "El Horno de Leo"
+print(f"OK carta: {n_prod} productos reales cargados")
+
+# --- backup automático
+b = r.backup_auto()
+assert b and os.path.exists(b)
+print("OK backup automático:", os.path.basename(b))
+
+app = r.App()
+app.update()
+r.messagebox.showinfo = lambda *a, **k: None
+r.messagebox.showwarning = lambda *a, **k: None
+r.messagebox.askyesno = lambda *a, **k: True
+
+# --- stock: activar control en Baklava con stock 2, mínimo 1
+con = r.db()
+pid = con.execute("SELECT id FROM productos WHERE nombre='Baklava'").fetchone()[0]
+con.execute("UPDATE productos SET usar_stock=1, stock=2, stock_min=1 WHERE id=?", (pid,))
+con.commit(); con.close()
+
+win = r.MesaWindow(app, 1)
+win.var_mozo.set("Leo")
+win.var_comensales.set(2)
+win._comensales_cambiados()
+
+def pedir(nombre_prod, comensal_idx, cant=1):
+    for iid in win.tree_prod.get_children():
+        if nombre_prod in win.tree_prod.item(iid, "text"):
+            win.tree_prod.selection_set(iid)
+            break
+    win.var_cant.set(cant)
+    win.cb_comensal.current(comensal_idx)
+    win._agregar()
+
+pedir("Shawarma de Pollo", 1, 1)   # 490 comensal 1
+pedir("Baklava", 2, 2)             # 380 comensal 2 (agota stock)
+pedir("Refresco 600 ml", 0, 2)     # 320 compartido
+
+con = r.db()
+assert con.execute("SELECT stock FROM productos WHERE id=?", (pid,)).fetchone()[0] == 0
+con.close()
+print("OK stock descontado al pedir (Baklava 2 -> 0)")
+
+# pedir otra baklava debe bloquearse (sin stock)
+errores = []
+r.messagebox.showerror = lambda t, m, **k: errores.append(m)
+pedir("Baklava", 2, 1)
+assert errores and "stock" in errores[0].lower(), errores
+con = r.db()
+assert con.execute("SELECT COUNT(*) FROM pedidos WHERE mesa=1").fetchone()[0] == 3
+con.close()
+print("OK bloqueo por falta de stock:", errores[0])
+
+# quitar la baklava devuelve stock
+iid_baklava = [i for i in win.tree_pedido.get_children()
+               if "Baklava" in win.tree_pedido.item(i, "values")[1]][0]
+win.tree_pedido.selection_set(iid_baklava)
+win._quitar()
+con = r.db()
+assert con.execute("SELECT stock FROM productos WHERE id=?", (pid,)).fetchone()[0] == 2
+con.close()
+print("OK stock devuelto al quitar ítem")
+pedir("Baklava", 2, 2)  # la vuelvo a cargar
+
+total_esperado = 490 + 380 + 320
+assert f"Total: {r.fmt(total_esperado)}" == win.lbl_total.cget("text")
+
+# --- faltantes detectados (stock 0 <= min 1)
+assert app._faltantes() and app._faltantes()[0][0] == "Baklava"
+print("OK aviso de faltantes:", app._faltantes())
+
+# --- cobro por comensal con MercadoPago
+dlg = r.tk.Toplevel(win)
+win._confirmar_cobro(dlg, "comensal", imprimir=False, medio="MercadoPago")
+con = r.db()
+venta = con.execute("SELECT mesa, mozo, total, modo, medio FROM ventas").fetchone()
+assert venta == (1, "Leo", total_esperado, "comensal", "MercadoPago"), venta
+items = con.execute("SELECT nombre, cantidad, subtotal FROM venta_items ORDER BY nombre").fetchall()
+assert ("Baklava", 2, 380.0) in items and len(items) == 3, items
+con.close()
+print("OK venta con medio de pago y detalle de items:", items)
+
+# --- recibos con medio de pago
+recibos = sorted(os.listdir(r.RECIBOS_DIR))
+texto = open(os.path.join(r.RECIBOS_DIR, recibos[0]), encoding="utf-8").read()
+assert "MercadoPago" in texto and "Cocina Armenia" in texto
+print("OK recibo con eslogan y medio de pago")
+
+# --- ESC/POS: bytes correctos
+data = r._escpos_bytes("Prueba áéíóú ñ")
+assert data.startswith(b"\x1b\x40\x1b\x74\x02") and data.endswith(b"\x1d\x56\x42\x00")
+assert "Prueba".encode() in data
+print("OK generación ESC/POS (init + CP850 + corte)")
+
+# --- estadísticas: datos y dibujo
+app.nb.select(3)
+app.update_idletasks(); app.update()
+app._redibujar_graficos()
+app.update()
+assert len(app.cv_top.find_all()) > 5, "el gráfico de top productos no dibujó nada"
+assert len(app.cv_dias.find_all()) > 5, "el gráfico por día no dibujó nada"
+print("OK gráficos dibujados:", len(app.cv_dias.find_all()), "y",
+      len(app.cv_top.find_all()), "elementos")
+
+# --- reporte con medio de pago
+app.var_fecha.set(datetime.date.today().isoformat())
+app._cargar_ventas()
+assert "MercadoPago" in app.lbl_por_mozo.cget("text")
+print("OK reporte:", app.lbl_resumen.cget("text"))
+
+# --- recargar carta
+app._recargar_carta()
+con = r.db()
+assert con.execute("SELECT COUNT(*) FROM productos").fetchone()[0] == 42
+con.close()
+print("OK recargar carta")
+
+app.destroy()
+print("\nTODAS LAS PRUEBAS PASARON")

@@ -62,4 +62,18 @@ Tres modos (pestaña Configuración → Impresora de tickets):
    `/dev/usb/lp0`; puede requerir agregar tu usuario al grupo `lp`).
 
 El botón **"Ticket de prueba"** permite verificar la conexión. Si la
-impresión falla, el ticket siempre queda guardado en `recibos/`.
+impresión falla, el ticket siempre queda guardado en `recibos/` (botón
+"Abrir carpeta de recibos" en Configuración).
+
+## Desarrollo
+
+El proyecto es un repositorio git. Después de cualquier cambio, correr la
+suite de pruebas (usa un HOME temporal, no toca los datos reales):
+
+```bash
+xvfb-run -a python3 tests/test_app.py   # necesita: sudo apt install xvfb
+```
+
+Y guardar el cambio: `git add -A && git commit -m "descripción del cambio"`.
+Para distribuir a Windows, rearmar el ZIP portable (WinPython + restaurante.py
++ HornoDeLeo.bat) o usar `crear_exe_windows.bat` en una PC con Windows.
