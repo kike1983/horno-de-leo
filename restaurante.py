@@ -657,6 +657,8 @@ class MesaWindow(tk.Toplevel):
                    command=self._imprimir_comanda).pack(side="left")
         ttk.Button(pie, text="🖨  Pre-cuenta",
                    command=self._imprimir_precuenta).pack(side="left", padx=8)
+        ttk.Button(pie, text="✖  Cancelar mesa",
+                   command=self._cancelar_mesa).pack(side="left")
         ttk.Button(pie, text="Cerrar ventana",
                    command=self._cerrar).pack(side="right")
         ttk.Button(pie, text="💵  COBRAR MESA", style="Accent.TButton",
@@ -883,6 +885,37 @@ class MesaWindow(tk.Toplevel):
             messagebox.showinfo("Impresión",
                                 f"Enviado a la impresora.\nCopia: {ruta}",
                                 parent=self)
+
+    # ------------------------------------------------ cancelar mesa
+
+    def _cancelar_mesa(self):
+        """Libera la mesa sin cobrar: borra los pedidos, devuelve el stock
+        y no registra ninguna venta (para mesas cargadas por error)."""
+        pedidos = self._pedidos()
+        if pedidos:
+            total = sum(p * c for _, _, p, c, _ in pedidos)
+            if not messagebox.askyesno(
+                    "Cancelar mesa",
+                    f"La mesa {self.numero} tiene {len(pedidos)} ítem(s) "
+                    f"por {fmt(total)}.\n\nSe van a borrar SIN cobrar: no "
+                    "queda registrada ninguna venta y el stock se devuelve."
+                    "\n¿Cancelar la mesa y dejarla libre?",
+                    icon="warning", default="no", parent=self):
+                return
+        con = db()
+        for _, nombre, _, cant, _ in pedidos:
+            con.execute("UPDATE productos SET stock=stock+? "
+                        "WHERE nombre=? AND usar_stock=1", (cant, nombre))
+        con.execute("DELETE FROM pedidos WHERE mesa=?", (self.numero,))
+        con.execute("UPDATE mesas SET abierta=0, comensales=0 WHERE numero=?",
+                    (self.numero,))
+        con.commit()
+        con.close()
+        self.app.refrescar_mesas()
+        messagebox.showinfo("Cancelar mesa",
+                            f"Mesa {self.numero} liberada (sin venta).",
+                            parent=self.app)
+        self.destroy()
 
     # ------------------------------------------------ cobro
 

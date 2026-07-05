@@ -142,5 +142,37 @@ assert con.execute("SELECT COUNT(*) FROM productos").fetchone()[0] == 42
 con.close()
 print("OK recargar carta")
 
+# --- cancelar mesa: libera sin registrar venta y devuelve stock
+con = r.db()
+pid2 = con.execute("SELECT id FROM productos WHERE nombre='Baklava'").fetchone()[0]
+con.execute("UPDATE productos SET usar_stock=1, stock=5, stock_min=1 WHERE id=?",
+            (pid2,))
+ventas_antes = con.execute("SELECT COUNT(*) FROM ventas").fetchone()[0]
+con.commit(); con.close()
+
+win2 = r.MesaWindow(app, 2)
+win2.var_mozo.set("Caro")
+win2.update()
+for iid in win2.tree_prod.get_children():
+    if "Baklava" in win2.tree_prod.item(iid, "text"):
+        win2.tree_prod.selection_set(iid)
+        break
+win2.var_cant.set(3)
+win2._agregar()
+con = r.db()
+assert con.execute("SELECT abierta FROM mesas WHERE numero=2").fetchone()[0] == 1
+assert con.execute("SELECT stock FROM productos WHERE id=?", (pid2,)).fetchone()[0] == 2
+con.close()
+
+win2._cancelar_mesa()   # askyesno está simulado en True
+con = r.db()
+assert con.execute("SELECT COUNT(*) FROM pedidos WHERE mesa=2").fetchone()[0] == 0
+assert con.execute("SELECT abierta, comensales FROM mesas WHERE numero=2").fetchone() == (0, 0)
+assert con.execute("SELECT stock FROM productos WHERE id=?", (pid2,)).fetchone()[0] == 5
+assert con.execute("SELECT COUNT(*) FROM ventas").fetchone()[0] == ventas_antes
+con.close()
+assert not win2.winfo_exists()
+print("OK cancelar mesa: liberada sin venta y con stock devuelto")
+
 app.destroy()
 print("\nTODAS LAS PRUEBAS PASARON")
