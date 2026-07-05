@@ -457,6 +457,58 @@ def ejecutar_bat_admin(texto_bat):
     return None
 
 
+# ---------------------------------------------------------------- campana
+
+def _generar_campana_wav():
+    """Genera el sonido de campana una sola vez (WAV sintetizado propio,
+    no depende de archivos del sistema)."""
+    ruta = os.path.join(APP_DIR, "campana.wav")
+    if os.path.exists(ruta):
+        return ruta
+    import wave
+    import math
+    import struct
+    fs, dur = 44100, 0.9
+    marcos = []
+    for i in range(int(fs * dur)):
+        t = i / fs
+        # golpe de campana: fundamental y dos parciales con caída exponencial
+        v = (math.sin(2 * math.pi * 880 * t)
+             + 0.6 * math.sin(2 * math.pi * 1320 * t)
+             + 0.4 * math.sin(2 * math.pi * 1760 * t))
+        v *= math.exp(-4 * t)
+        marcos.append(struct.pack("<h", int(v / 2.0 * 32767 * 0.85)))
+    with wave.open(ruta, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(fs)
+        w.writeframes(b"".join(marcos))
+    return ruta
+
+
+def sonar_campana():
+    """Reproduce la campana sin bloquear. Devuelve False si no se pudo
+    (el que llama puede usar el beep del sistema como último recurso)."""
+    try:
+        ruta = _generar_campana_wav()
+        if sys.platform.startswith("win"):
+            import winsound
+            winsound.PlaySound(ruta,
+                               winsound.SND_FILENAME | winsound.SND_ASYNC)
+            return True
+        for reproductor in (["paplay", ruta], ["pw-play", ruta],
+                            ["aplay", "-q", ruta]):
+            try:
+                subprocess.Popen(reproductor, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL)
+                return True
+            except FileNotFoundError:
+                continue
+    except Exception:
+        pass
+    return False
+
+
 def abrir_carpeta(ruta):
     """Abre una carpeta en el explorador de archivos del sistema."""
     try:
@@ -1177,9 +1229,10 @@ class App(tk.Tk):
         self.after(1000, self._escuchar_avisos)
 
     def _campana(self, veces):
-        self.bell()
+        if not sonar_campana():
+            self.bell()  # último recurso si no hay audio
         if veces > 1:
-            self.after(300, lambda: self._campana(veces - 1))
+            self.after(400, lambda: self._campana(veces - 1))
 
     # ------------------------------------------------ estilos
 
