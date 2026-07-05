@@ -298,7 +298,6 @@ def armar_recibo(titulo, mozo, items, total, nota="", medio=""):
     if nota:
         lineas.append(centrar(nota))
     lineas.append(centrar("Gracias por preferirnos!"))
-    lineas.append(centrar("Shnorhakalutyun — Շնորհակալություն"))
     lineas.append("")
     return "\n".join(lineas)
 
