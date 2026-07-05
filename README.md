@@ -63,12 +63,18 @@ pantalla de inicio" les queda como una app con ícono, a pantalla completa.
 Funciona en cualquier Android o iPhone, sin instalar nada.
 
 Desde el celular se puede:
+- Entrar con el nombre del mozo/a (lo pide cada vez que se abre la app; el
+  botón 👤 de arriba permite cambiar de mozo sin cerrar).
 - Ver el salón en vivo (mesas libres/ocupadas con el total).
-- Abrir una mesa, cargar su nombre y la cantidad de comensales.
+- Abrir una mesa y cargar la cantidad de comensales. La mesa queda a nombre
+  de quien la abre; otros mozos pueden agregarle ítems pero no se la quedan.
 - Ver lo ya pedido y agregar productos (buscador, categorías, cantidad,
   a la cuenta general o a un comensal). Respeta el control de stock.
 - Enviar el pedido: la mesa se marca ocupada en la PC al instante y, si está
   activado, **la comanda de cocina se imprime sola** con lo recién pedido.
+
+Al cobrar la mesa (o cancelarla) queda libre **y sin mozo**, hasta que
+alguien la vuelva a abrir.
 
 Detalles:
 - Si la dirección lleva `?mesa=3` al final, se abre esa mesa directo (útil

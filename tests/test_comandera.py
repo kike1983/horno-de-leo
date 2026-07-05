@@ -117,6 +117,26 @@ texto = open(comandas[-1], encoding="utf-8").read()
 assert " 1 x Baklava  (comensal 3)" in texto and "Shawarma" not in texto
 print("OK agregar después: suma a la cuenta y comanda solo con lo nuevo")
 
+# --- el nombre del mozo es obligatorio
+code, resp = POST("/api/pedido", {
+    "mesa": 3, "items": [{"id": pid_sh, "cantidad": 1, "comensal": 0}]})
+assert code == 400 and "mozo" in resp["error"].lower(), (code, resp)
+print("OK sin nombre de mozo se rechaza el pedido")
+
+# --- otro mozo puede agregar ítems pero la mesa sigue siendo de quien
+#     la abrió (Caro); la comanda sale a nombre de la mesa
+code, resp = POST("/api/pedido", {
+    "mesa": 3, "mozo": "Juan",
+    "items": [{"id": pid_sh, "cantidad": 1, "comensal": 0}]})
+assert code == 200, resp
+con = r.db()
+assert con.execute("SELECT mozo FROM mesas WHERE numero=3").fetchone()[0] == "Caro"
+con.close()
+texto = open(sorted(glob.glob(os.path.join(
+    r.RECIBOS_DIR, "comanda_*.txt")))[-1], encoding="utf-8").read()
+assert "Mozo/a: Caro" in texto
+print("OK la mesa conserva al mozo que la abrió (Caro, no Juan)")
+
 # --- rechazo por falta de stock (no queda baklava, pido 5) y nada cambia
 code, resp = POST("/api/pedido", {
     "mesa": 3, "mozo": "Caro",
@@ -125,15 +145,15 @@ assert code == 409 and "Baklava" in resp["error"], (code, resp)
 con = r.db()
 assert con.execute("SELECT stock FROM productos WHERE id=?",
                    (pid_baklava,)).fetchone()[0] == 0
-assert con.execute("SELECT COUNT(*) FROM pedidos WHERE mesa=3").fetchone()[0] == 3
+assert con.execute("SELECT COUNT(*) FROM pedidos WHERE mesa=3").fetchone()[0] == 4
 con.close()
 print("OK rechazo por stock insuficiente (sin cambios en la base)")
 
 # --- pedidos inválidos
-assert POST("/api/pedido", {"mesa": 99, "items": [
+assert POST("/api/pedido", {"mesa": 99, "mozo": "Caro", "items": [
     {"id": pid_sh, "cantidad": 1, "comensal": 0}]})[0] == 404
-assert POST("/api/pedido", {"mesa": 1, "items": []})[0] == 400
-assert POST("/api/pedido", {"mesa": 1, "items": [
+assert POST("/api/pedido", {"mesa": 1, "mozo": "Caro", "items": []})[0] == 400
+assert POST("/api/pedido", {"mesa": 1, "mozo": "Caro", "items": [
     {"id": 999999, "cantidad": 1, "comensal": 0}]})[0] == 400
 assert GET("/api/estado")["mesas"][0]["abierta"] is False
 print("OK rechazos: mesa inexistente, sin ítems, producto inexistente")

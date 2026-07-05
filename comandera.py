@@ -127,10 +127,15 @@ def _recibir_pedido(datos):
     con = _d["db"]()
     try:
         con.execute("BEGIN IMMEDIATE")
-        if not con.execute("SELECT 1 FROM mesas WHERE numero=?",
-                           (mesa,)).fetchone():
+        fila = con.execute("SELECT mozo FROM mesas WHERE numero=?",
+                           (mesa,)).fetchone()
+        if not fila:
             con.rollback()
             return 404, {"error": f"La mesa {mesa} no existe."}
+        mozo_actual = (fila[0] or "").strip()
+        if not mozo:
+            con.rollback()
+            return 400, {"error": "Falta el nombre del mozo/a."}
 
         faltas, filas = [], []
         for pid, cant, comensal in pedido:
@@ -162,12 +167,14 @@ def _recibir_pedido(datos):
             "SELECT comensales FROM mesas WHERE numero=?", (mesa,)).fetchone()
         comensales_final = max(actual[0] or 0, comensales,
                                max(c for _, _, c in pedido))
-        if mozo:
-            con.execute("UPDATE mesas SET mozo=?, comensales=?, abierta=1 "
-                        "WHERE numero=?", (mozo, comensales_final, mesa))
-        else:
+        if mozo_actual:
+            # la mesa ya tiene mozo: otro puede agregar ítems, pero la
+            # mesa sigue siendo de quien la abrió
             con.execute("UPDATE mesas SET comensales=?, abierta=1 "
                         "WHERE numero=?", (comensales_final, mesa))
+        else:
+            con.execute("UPDATE mesas SET mozo=?, comensales=?, abierta=1 "
+                        "WHERE numero=?", (mozo, comensales_final, mesa))
         total = con.execute(
             "SELECT COALESCE(SUM(precio*cantidad),0) FROM pedidos "
             "WHERE mesa=?", (mesa,)).fetchone()[0]
@@ -175,7 +182,7 @@ def _recibir_pedido(datos):
     finally:
         con.close()
 
-    _imprimir_comanda(mesa, mozo,
+    _imprimir_comanda(mesa, mozo_actual or mozo,
                       [(cant, nombre, comensal)
                        for _, nombre, _, cant, comensal, _ in filas])
     return 200, {"ok": True, "total": total}
@@ -316,6 +323,14 @@ PAGINA = """<!doctype html>
   #btnVolver{background:rgba(255,255,255,.15); border:0; color:#fff;
              font-size:1.3rem; line-height:1; padding:6px 14px;
              border-radius:8px}
+  #btnMozo{background:rgba(255,255,255,.15); border:0; color:#fff;
+           font-size:.85rem; padding:7px 12px; border-radius:999px;
+           font-family:inherit; white-space:nowrap}
+  #cajaLogin{margin-top:12vh; text-align:center}
+  #cajaLogin p{color:var(--suave); font-size:.85rem; margin-top:10px}
+  #btnEntrar{width:100%; margin-top:12px; border:0; background:var(--bordo);
+             color:#fff; border-radius:10px; padding:14px; font-size:1.05rem;
+             font-weight:700; font-family:inherit}
   #banner{display:none; background:var(--rojo); color:#fff; text-align:center;
           padding:6px; font-size:.85rem; flex:none}
   main{flex:1; overflow-y:auto; padding:12px;
@@ -402,20 +417,29 @@ PAGINA = """<!doctype html>
 <header>
   <button id="btnVolver" hidden>&#8249;</button>
   <h1 id="titulo">Comandera</h1>
+  <button id="btnMozo" hidden></button>
 </header>
 <div id="banner">Sin conexión con la PC del restaurante…</div>
 
-<main id="vMesas">
+<main id="vLogin" hidden>
+  <div class="tarjeta" id="cajaLogin">
+    <h2 style="margin-top:0">¿Quién atiende?</h2>
+    <input id="inNombre" placeholder="Tu nombre" autocomplete="off"
+           maxlength="40">
+    <button id="btnEntrar">ENTRAR</button>
+    <p>Tu nombre queda en las mesas que abras y en las comandas de cocina.</p>
+  </div>
+</main>
+
+<main id="vMesas" hidden>
   <div id="grillaMesas"></div>
 </main>
 
 <main id="vMesa" hidden>
   <div class="tarjeta">
+    <div id="lblMozoMesa" style="margin-bottom:8px"></div>
     <div class="filaCampos">
-      <label>Mozo/a
-        <input id="inMozo" placeholder="Tu nombre" autocomplete="off">
-      </label>
-      <label>Comensales
+      <label style="flex:0 0 130px">Comensales
         <input id="inCom" type="number" min="1" max="30" inputmode="numeric">
       </label>
     </div>
@@ -449,6 +473,9 @@ const $ = id => document.getElementById(id);
 let estado = null, mesa = null, detalle = null;
 let carrito = [], cat = "Todas", filtro = "", vista = "mesas";
 let paraQuien = 0;  // 0 = toda la mesa, 1..N = comensal elegido
+/* cada vez que se abre la comandera hay que poner el nombre
+   (sessionStorage dura solo mientras la app está abierta) */
+let mozo = sessionStorage.mozo || "";
 
 const fmtNum = new Intl.NumberFormat("es-UY",
   {minimumFractionDigits: 0, maximumFractionDigits: 2});
@@ -484,6 +511,7 @@ async function api(ruta, cuerpo) {
 async function cargarEstado() {
   estado = await api("/api/estado");
   if (vista === "mesas") renderMesas();
+  else if (vista === "login") $("titulo").textContent = estado.nombre;
 }
 
 function renderMesas() {
@@ -509,7 +537,6 @@ async function abrirMesa(n) {
   } catch (e) { alert(e.message); return; }
   mesa = n; carrito = []; cat = "Todas"; filtro = ""; paraQuien = 0;
   $("inBuscar").value = "";
-  $("inMozo").value = detalle.mozo || localStorage.mozo || "";
   $("inCom").value = detalle.comensales > 0 ? detalle.comensales : 1;
   vista = "mesa";
   render();
@@ -522,20 +549,53 @@ function volver() {
 }
 
 function render() {
+  $("vLogin").hidden = vista !== "login";
   $("vMesas").hidden = vista !== "mesas";
   $("vMesa").hidden = vista !== "mesa";
   $("btnVolver").hidden = vista !== "mesa";
+  $("btnMozo").hidden = vista === "login" || !mozo;
+  $("btnMozo").textContent = "👤 " + mozo;
+  if (vista === "login") {
+    $("titulo").textContent = estado ? estado.nombre : "Comandera";
+    $("barra").style.display = "none";
+    return;
+  }
   if (vista === "mesas") {
     if (estado) renderMesas();
     $("barra").style.display = "none";
     return;
   }
   $("titulo").textContent = "Mesa " + mesa;
+  $("lblMozoMesa").textContent = detalle.mozo
+    ? "Mozo/a de la mesa: " + detalle.mozo
+    : "Mesa sin mozo — la abrís vos: " + mozo;
   renderYaPedido();
   renderPara();
   renderChips();
   renderProductos();
   renderBarra();
+}
+
+async function entrar() {
+  const nombre = $("inNombre").value.trim();
+  if (!nombre) { $("inNombre").focus(); return; }
+  mozo = nombre;
+  sessionStorage.mozo = nombre;
+  localStorage.mozo = nombre;  // solo para sugerirlo la próxima vez
+  vista = "mesas";
+  render();
+  try {
+    await cargarEstado();
+    if (mesaInicial) await abrirMesa(mesaInicial);
+  } catch (e) {}
+}
+
+function salir() {
+  mozo = ""; mesa = null; carrito = [];
+  sessionStorage.removeItem("mozo");
+  $("inNombre").value = localStorage.mozo || "";
+  vista = "login";
+  render();
 }
 
 function renderPara() {
@@ -678,12 +738,11 @@ async function enviar() {
   try {
     await api("/api/pedido", {
       mesa: mesa,
-      mozo: $("inMozo").value.trim(),
+      mozo: mozo,
       comensales: parseInt($("inCom").value) || 1,
       items: carrito.map(i => ({id: i.id, cantidad: i.cantidad,
                                 comensal: i.comensal}))
     });
-    localStorage.mozo = $("inMozo").value.trim();
     carrito = [];
     toast("Pedido enviado ✔");
     detalle = await api("/api/mesa?n=" + mesa);
@@ -710,6 +769,9 @@ function toast(msj) {
 /* ---------------- eventos ---------------- */
 
 $("btnVolver").onclick = volver;
+$("btnMozo").onclick = salir;
+$("btnEntrar").onclick = entrar;
+$("inNombre").onkeydown = e => { if (e.key === "Enter") entrar(); };
 $("btnEnviar").onclick = enviar;
 $("btnCarrito").onclick = () => {
   const c = $("carrito");
@@ -725,13 +787,21 @@ document.addEventListener("visibilitychange", () => {
   if (!document.hidden && vista === "mesas") cargarEstado().catch(() => {});
 });
 
-/* si la dirección trae ?mesa=N se abre esa mesa directo
-   (sirve para pegar un QR distinto en cada mesa) */
+/* si la dirección trae ?mesa=N se abre esa mesa directo apenas
+   el mozo pone su nombre (sirve para pegar un QR en cada mesa) */
 const mesaInicial = parseInt(
   new URLSearchParams(location.search).get("mesa"));
-cargarEstado()
-  .then(() => { if (mesaInicial) return abrirMesa(mesaInicial); })
-  .catch(e => { $("banner").style.display = "block"; });
+$("inNombre").value = localStorage.mozo || "";
+if (!mozo) {
+  vista = "login";
+  render();
+  cargarEstado().catch(e => { $("banner").style.display = "block"; });
+} else {
+  render();
+  cargarEstado()
+    .then(() => { if (mesaInicial) return abrirMesa(mesaInicial); })
+    .catch(e => { $("banner").style.display = "block"; });
+}
 </script>
 </body>
 </html>

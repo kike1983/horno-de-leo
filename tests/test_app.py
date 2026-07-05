@@ -167,7 +167,10 @@ con.close()
 win2._cancelar_mesa()   # askyesno está simulado en True
 con = r.db()
 assert con.execute("SELECT COUNT(*) FROM pedidos WHERE mesa=2").fetchone()[0] == 0
-assert con.execute("SELECT abierta, comensales FROM mesas WHERE numero=2").fetchone() == (0, 0)
+assert con.execute("SELECT abierta, comensales, mozo FROM mesas "
+                   "WHERE numero=2").fetchone() == (0, 0, "")
+# la mesa 1 se cobró antes: también tiene que haber quedado sin mozo
+assert con.execute("SELECT mozo FROM mesas WHERE numero=1").fetchone()[0] == ""
 assert con.execute("SELECT stock FROM productos WHERE id=?", (pid2,)).fetchone()[0] == 5
 assert con.execute("SELECT COUNT(*) FROM ventas").fetchone()[0] == ventas_antes
 con.close()

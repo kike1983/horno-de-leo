@@ -907,8 +907,8 @@ class MesaWindow(tk.Toplevel):
             con.execute("UPDATE productos SET stock=stock+? "
                         "WHERE nombre=? AND usar_stock=1", (cant, nombre))
         con.execute("DELETE FROM pedidos WHERE mesa=?", (self.numero,))
-        con.execute("UPDATE mesas SET abierta=0, comensales=0 WHERE numero=?",
-                    (self.numero,))
+        con.execute("UPDATE mesas SET abierta=0, comensales=0, mozo='' "
+                    "WHERE numero=?", (self.numero,))
         con.commit()
         con.close()
         self.app.refrescar_mesas()
@@ -1020,8 +1020,9 @@ class MesaWindow(tk.Toplevel):
             [(venta_id, nombre, cant, precio * cant)
              for _, nombre, precio, cant, _ in pedidos])
         cur.execute("DELETE FROM pedidos WHERE mesa=?", (self.numero,))
-        cur.execute("UPDATE mesas SET abierta=0, comensales=0 WHERE numero=?",
-                    (self.numero,))
+        # la mesa queda libre y sin mozo hasta que alguien la vuelva a abrir
+        cur.execute("UPDATE mesas SET abierta=0, comensales=0, mozo='' "
+                    "WHERE numero=?", (self.numero,))
         con.commit()
         con.close()
 
