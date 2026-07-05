@@ -2,8 +2,10 @@
 
 Sistema de administración para el restaurante: carta real cargada, mesas,
 mozos, cuentas por comensal, medios de pago, control de stock, impresión de
-recibos (sistema o térmica ESC/POS), estadísticas con gráficos y backup
-automático. Un solo archivo (`restaurante.py`), sin dependencias externas.
+recibos (sistema o térmica ESC/POS), estadísticas con gráficos, backup
+automático y **comandera web para que los mozos tomen pedidos desde el
+celular**. Dos archivos (`restaurante.py` + `comandera.py`), sin
+dependencias externas.
 
 ## Cómo ejecutarlo
 
@@ -45,8 +47,37 @@ Los datos se guardan en `~/.restaurante_armenio/`:
   exportación a CSV.
 - **Estadísticas**: facturación por día y ranking de productos más vendidos
   (hoy / últimos 7 días / últimos 30 días).
+- **Comandera para mozos**: los mozos toman los pedidos desde el celular y
+  llegan al instante a la PC (ver sección siguiente).
 - **Configuración**: datos del local para el ticket, cantidad de mesas,
-  mozo por mesa, impresora, backup manual y recarga de la carta original.
+  mozo por mesa, impresora, comandera, backup manual y recarga de la carta
+  original.
+
+## Comandera para mozos (celulares)
+
+Al abrir el programa se enciende sola un mini servidor web en la PC. En la
+pestaña **Configuración → Comandera para mozos** aparece la dirección (por
+ejemplo `http://192.168.1.5:8750`); los mozos la abren en el navegador del
+celular **conectado a la misma red WiFi que la PC** y con "Agregar a
+pantalla de inicio" les queda como una app con ícono, a pantalla completa.
+Funciona en cualquier Android o iPhone, sin instalar nada.
+
+Desde el celular se puede:
+- Ver el salón en vivo (mesas libres/ocupadas con el total).
+- Abrir una mesa, cargar su nombre y la cantidad de comensales.
+- Ver lo ya pedido y agregar productos (buscador, categorías, cantidad,
+  a la cuenta general o a un comensal). Respeta el control de stock.
+- Enviar el pedido: la mesa se marca ocupada en la PC al instante y, si está
+  activado, **la comanda de cocina se imprime sola** con lo recién pedido.
+
+Detalles:
+- Si la dirección lleva `?mesa=3` al final, se abre esa mesa directo (útil
+  para imprimir un QR distinto y pegarlo en cada mesa).
+- En Windows, la primera vez el firewall pregunta si permite a Python/
+  HornoDeLeo aceptar conexiones: marcar **redes privadas** y permitir.
+- Conviene fijarle IP fija a la PC en el router para que la dirección no
+  cambie. El puerto se puede cambiar en Configuración.
+- El cobro de la mesa se hace siempre desde la PC.
 
 ## Impresión
 
@@ -72,6 +103,7 @@ suite de pruebas (usa un HOME temporal, no toca los datos reales):
 
 ```bash
 xvfb-run -a python3 tests/test_app.py   # necesita: sudo apt install xvfb
+python3 tests/test_comandera.py         # comandera (no necesita pantalla)
 ```
 
 Y guardar el cambio: `git add -A && git commit -m "descripción del cambio"`.

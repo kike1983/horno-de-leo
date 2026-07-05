@@ -6,7 +6,8 @@ El Horno de Leo — Gestión del restaurante
 Sistema de administración: productos por categoría con control de stock,
 mesas con mozo asignado, cuentas por mesa o por comensal, medios de pago,
 impresión de recibos (impresora del sistema o térmica ESC/POS), comandas
-de cocina, estadísticas con gráficos y backup automático diario.
+de cocina, estadísticas con gráficos, backup automático diario y comandera
+web para que los mozos tomen pedidos desde el celular (misma red WiFi).
 
 Funciona en Linux y Windows con Python 3.8+ (solo usa la librería estándar).
 
@@ -25,6 +26,8 @@ import datetime
 import subprocess
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
+
+import comandera  # servidor web para que los mozos pidan desde el celular
 
 # ---------------------------------------------------------------- rutas / constantes
 
@@ -69,6 +72,8 @@ def fmt_corto(x):
 def db():
     con = sqlite3.connect(DB_PATH)
     con.execute("PRAGMA foreign_keys = ON")
+    # la comandera escribe desde otro hilo: esperar si la base está ocupada
+    con.execute("PRAGMA busy_timeout = 4000")
     return con
 
 
@@ -192,6 +197,8 @@ def init_db():
     _agregar_columna(cur, "productos", "stock", "INTEGER DEFAULT 0")
     _agregar_columna(cur, "productos", "stock_min", "INTEGER DEFAULT 0")
     _agregar_columna(cur, "ventas", "medio", "TEXT DEFAULT 'Efectivo'")
+    # WAL: la interfaz y la comandera pueden leer/escribir a la vez
+    cur.execute("PRAGMA journal_mode = WAL")
 
     if cur.execute("SELECT COUNT(*) FROM productos").fetchone()[0] == 0:
         seed_carta(cur)
@@ -205,7 +212,10 @@ def init_db():
             ("imp_modo", "sistema"),
             ("imp_red", "192.168.1.100:9100"),
             ("imp_dev", "/dev/usb/lp0"),
-            ("imp_corte", "1")]:
+            ("imp_corte", "1"),
+            ("mozos_activo", "1"),
+            ("mozos_puerto", str(comandera.PUERTO_DEFECTO)),
+            ("mozos_comanda", "1")]:
         cur.execute("INSERT OR IGNORE INTO config(clave, valor) VALUES (?,?)",
                     (clave, valor))
     con.commit()
@@ -353,6 +363,13 @@ def imprimir_texto(texto, prefijo="recibo"):
         return ruta, error
     except Exception as e:
         return ruta, str(e)
+
+
+def deps_comandera():
+    """Funciones que el módulo comandera necesita (evita import circular)."""
+    return {"db": db, "cfg_get": cfg_get, "centrar": centrar,
+            "imprimir_texto": imprimir_texto, "categorias": CATEGORIAS,
+            "ancho": ANCHO_TICKET}
 
 
 def abrir_carpeta(ruta):
@@ -555,9 +572,11 @@ class MesaWindow(tk.Toplevel):
                    command=self._cobrar).pack(side="right", padx=8)
 
         self.protocol("WM_DELETE_WINDOW", self._cerrar)
+        self._snap_pedidos = None
         self._cargar_productos()
         self._comensales_cambiados()
         self._refrescar_pedido()
+        self.after(3000, self._auto_refresco)
 
     # ------------------------------------------------ helpers de datos
 
@@ -689,7 +708,8 @@ class MesaWindow(tk.Toplevel):
     def _refrescar_pedido(self):
         self.tree_pedido.delete(*self.tree_pedido.get_children())
         total = 0.0
-        for pid, nombre, precio, cant, comensal in self._pedidos():
+        rows = self._pedidos()
+        for pid, nombre, precio, cant, comensal in rows:
             quien = "Cuenta general" if comensal == 0 else f"Comensal {comensal}"
             sub = precio * cant
             total += sub
@@ -697,6 +717,17 @@ class MesaWindow(tk.Toplevel):
                                     values=(quien, nombre, cant,
                                             fmt(precio), fmt(sub)))
         self.lbl_total.config(text=f"Total: {fmt(total)}")
+        self._snap_pedidos = rows
+
+    def _auto_refresco(self):
+        """Refleja pedidos que entran desde la comandera de los mozos."""
+        if not self.winfo_exists():
+            return
+        if self._pedidos() != self._snap_pedidos:
+            self._cargar_productos()
+            self._refrescar_pedido()
+            self.app.refrescar_mesas()
+        self.after(3000, self._auto_refresco)
 
     # ------------------------------------------------ impresión
 
@@ -899,6 +930,13 @@ class App(tk.Tk):
         self.configure(bg=COL_BG)
         self._estilos()
         self._ventanas_mesa = {}
+        self._snap_mesas = None
+
+        # comandera web para los mozos (celulares en la misma red WiFi)
+        self.comandera_srv = None
+        self.comandera_url = ""
+        if cfg_get("mozos_activo", "1") == "1":
+            self._comandera_arrancar(silencioso=True)
 
         nb = ttk.Notebook(self)
         nb.pack(fill="both", expand=True, padx=8, pady=8)
@@ -922,6 +960,51 @@ class App(tk.Tk):
         self._armar_tab_config()
 
         self.after(600, self._avisar_faltantes)
+        self.after(4000, self._auto_refresco)
+
+    # ------------------------------------------------ comandera de mozos
+
+    def _comandera_arrancar(self, silencioso=False):
+        try:
+            puerto = int(cfg_get("mozos_puerto", str(comandera.PUERTO_DEFECTO)))
+        except ValueError:
+            puerto = comandera.PUERTO_DEFECTO
+        if self.comandera_srv:
+            comandera.detener(self.comandera_srv)
+            self.comandera_srv = None
+        try:
+            self.comandera_srv, self.comandera_url = comandera.iniciar(
+                deps_comandera(), puerto)
+        except OSError as e:
+            self.comandera_url = ""
+            if not silencioso:
+                messagebox.showerror(
+                    "Comandera",
+                    f"No se pudo iniciar la comandera en el puerto {puerto}:\n"
+                    f"{e}\n\nProbá con otro puerto.", parent=self)
+        self._actualizar_url_comandera()
+
+    def _comandera_apagar(self):
+        if self.comandera_srv:
+            comandera.detener(self.comandera_srv)
+            self.comandera_srv = None
+        self._actualizar_url_comandera()
+
+    def _actualizar_url_comandera(self):
+        if not hasattr(self, "var_mz_url"):
+            return  # la pestaña de configuración todavía no se armó
+        self.var_mz_url.set(self.comandera_url if self.comandera_srv
+                            else "(comandera apagada)")
+
+    def _auto_refresco(self):
+        """Refleja en la grilla los pedidos que entran desde los celulares."""
+        try:
+            if self.nb.index(self.nb.select()) == 0 \
+                    and self._datos_mesas() != self._snap_mesas:
+                self.refrescar_mesas()
+        except tk.TclError:
+            return
+        self.after(4000, self._auto_refresco)
 
     # ------------------------------------------------ estilos
 
@@ -1004,15 +1087,20 @@ class App(tk.Tk):
             ttk.Label(leyenda, text=texto, style="Panel.TLabel").pack(side="left")
         self.refrescar_mesas()
 
-    def refrescar_mesas(self):
-        for w in self.frame_grilla.winfo_children():
-            w.destroy()
+    def _datos_mesas(self):
         con = db()
         mesas = con.execute(
             "SELECT numero, mozo, abierta FROM mesas ORDER BY numero").fetchall()
         totales = dict(con.execute(
             "SELECT mesa, SUM(precio*cantidad) FROM pedidos GROUP BY mesa").fetchall())
         con.close()
+        return mesas, totales
+
+    def refrescar_mesas(self):
+        for w in self.frame_grilla.winfo_children():
+            w.destroy()
+        mesas, totales = self._datos_mesas()
+        self._snap_mesas = (mesas, totales)
         columnas = 5
         for i in range(columnas):
             self.frame_grilla.columnconfigure(i, weight=1)
@@ -1388,7 +1476,7 @@ class App(tk.Tk):
         f = self.tab_cfg
         f.columnconfigure(0, weight=0, minsize=430)
         f.columnconfigure(1, weight=1)
-        f.rowconfigure(2, weight=1)
+        f.rowconfigure(3, weight=1)
 
         ttk.Label(f, text="Configuración", style="Titulo.TLabel")\
             .grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
@@ -1446,9 +1534,48 @@ class App(tk.Tk):
         ttk.Button(fila_imp, text="🖨  Ticket de prueba",
                    command=self._ticket_prueba).pack(side="left", padx=8)
 
+        # --- comandera de mozos (celulares)
+        com = ttk.Labelframe(
+            f, text=" Comandera para mozos (celulares por WiFi) ", padding=12)
+        com.grid(row=3, column=0, sticky="new", padx=(0, 10), pady=(10, 0))
+        com.columnconfigure(1, weight=1)
+        self.var_mz_activo = tk.BooleanVar(
+            value=cfg_get("mozos_activo", "1") == "1")
+        ttk.Checkbutton(com, text="Activar la comandera al abrir el programa",
+                        variable=self.var_mz_activo)\
+            .grid(row=0, column=0, columnspan=2, sticky="w", pady=2)
+        self.var_mz_comanda = tk.BooleanVar(
+            value=cfg_get("mozos_comanda", "1") == "1")
+        ttk.Checkbutton(com,
+                        text="Imprimir comanda de cocina al recibir un pedido",
+                        variable=self.var_mz_comanda)\
+            .grid(row=1, column=0, columnspan=2, sticky="w", pady=2)
+        fila_pto = ttk.Frame(com)
+        fila_pto.grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 2))
+        ttk.Label(fila_pto, text="Puerto:").pack(side="left")
+        self.var_mz_puerto = tk.StringVar(
+            value=cfg_get("mozos_puerto", str(comandera.PUERTO_DEFECTO)))
+        ttk.Entry(fila_pto, textvariable=self.var_mz_puerto,
+                  width=7).pack(side="left", padx=6)
+        ttk.Button(fila_pto, text="💾  Guardar y aplicar",
+                   command=self._guardar_comandera).pack(side="left", padx=8)
+        ttk.Label(com, text="Los mozos abren esta dirección en el navegador "
+                            "del celular (misma red WiFi que esta PC):",
+                  wraplength=380, justify="left")\
+            .grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 2))
+        self.var_mz_url = tk.StringVar()
+        ttk.Entry(com, textvariable=self.var_mz_url, state="readonly",
+                  font=(FONT, 11, "bold"))\
+            .grid(row=4, column=0, columnspan=2, sticky="ew", pady=(0, 2))
+        ttk.Label(com, text='Con "Agregar a pantalla de inicio" queda como '
+                            "una app con su ícono.",
+                  foreground=COL_MUTED, wraplength=380, justify="left")\
+            .grid(row=5, column=0, columnspan=2, sticky="w")
+        self._actualizar_url_comandera()
+
         # --- mesas y mozos
         mesas = ttk.Labelframe(f, text=" Mesas y mozos ", padding=12)
-        mesas.grid(row=1, column=1, rowspan=2, sticky="nsew")
+        mesas.grid(row=1, column=1, rowspan=3, sticky="nsew")
         mesas.columnconfigure(0, weight=1)
         mesas.rowconfigure(2, weight=1)
 
@@ -1519,6 +1646,26 @@ class App(tk.Tk):
         cfg_set("imp_corte", "1" if self.var_imp_corte.get() else "0")
         messagebox.showinfo("Impresora", "Configuración de impresora guardada.",
                             parent=self)
+
+    def _guardar_comandera(self):
+        puerto = self.var_mz_puerto.get().strip()
+        if not puerto.isdigit() or not 1 <= int(puerto) <= 65535:
+            messagebox.showerror("Comandera", "El puerto no es válido "
+                                 "(usá un número, por ej. 8750).", parent=self)
+            return
+        cfg_set("mozos_activo", "1" if self.var_mz_activo.get() else "0")
+        cfg_set("mozos_comanda", "1" if self.var_mz_comanda.get() else "0")
+        cfg_set("mozos_puerto", puerto)
+        if self.var_mz_activo.get():
+            self._comandera_arrancar()
+            if self.comandera_srv:
+                messagebox.showinfo(
+                    "Comandera",
+                    "Comandera activa. En el celular abrir:\n\n"
+                    f"{self.comandera_url}", parent=self)
+        else:
+            self._comandera_apagar()
+            messagebox.showinfo("Comandera", "Comandera apagada.", parent=self)
 
     def _ticket_prueba(self):
         cfg_set("imp_modo", self.var_imp_modo.get())
