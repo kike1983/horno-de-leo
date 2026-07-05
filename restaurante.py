@@ -500,11 +500,18 @@ class MesaWindow(tk.Toplevel):
         izq.columnconfigure(0, weight=1)
         izq.rowconfigure(1, weight=1)
 
+        # botones de categoría, como en la comandera de los mozos
         self.var_cat = tk.StringVar(value="Todas")
-        cb_cat = ttk.Combobox(izq, textvariable=self.var_cat, state="readonly",
-                              values=["Todas"] + CATEGORIAS)
-        cb_cat.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6))
-        cb_cat.bind("<<ComboboxSelected>>", lambda e: self._cargar_productos())
+        fila_cat = ttk.Frame(izq)
+        fila_cat.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+        self._chips_cat = {}
+        for c in ["Todas"] + CATEGORIAS:
+            b = tk.Button(fila_cat, text=c, relief="flat", cursor="hand2",
+                          font=(FONT, 9, "bold"), bd=0, padx=10, pady=4,
+                          command=lambda c=c: self._elegir_categoria(c))
+            b.pack(side="left", padx=(0, 5))
+            self._chips_cat[c] = b
+        self._pintar_chips()
 
         self.tree_prod = ttk.Treeview(izq, columns=("precio",), height=12)
         self.tree_prod.heading("#0", text="Producto")
@@ -603,6 +610,22 @@ class MesaWindow(tk.Toplevel):
         con.close()
 
     # ------------------------------------------------ acciones UI
+
+    def _elegir_categoria(self, categoria):
+        self.var_cat.set(categoria)
+        self._pintar_chips()
+        self._cargar_productos()
+
+    def _pintar_chips(self):
+        for c, b in self._chips_cat.items():
+            if c == self.var_cat.get():
+                b.config(bg=COL_ACCENT, fg="white",
+                         activebackground=COL_ACCENT2,
+                         activeforeground="white")
+            else:
+                b.config(bg=COL_PANEL, fg=COL_ACCENT,
+                         activebackground=COL_GRID,
+                         activeforeground=COL_ACCENT)
 
     def _cargar_productos(self):
         self.tree_prod.delete(*self.tree_prod.get_children())
