@@ -150,9 +150,18 @@ con.execute("UPDATE productos SET usar_stock=1, stock=5, stock_min=1 WHERE id=?"
 ventas_antes = con.execute("SELECT COUNT(*) FROM ventas").fetchone()[0]
 con.commit(); con.close()
 
+# dejar la mesa 2 "pidiendo la cuenta": abrirla debe apagar el aviso
+con = r.db()
+con.execute("UPDATE mesas SET pide_cuenta=1 WHERE numero=2")
+con.commit(); con.close()
+
 win2 = r.MesaWindow(app, 2)
 win2.var_mozo.set("Caro")
 win2.update()
+con = r.db()
+assert con.execute("SELECT pide_cuenta FROM mesas WHERE numero=2").fetchone()[0] == 0
+con.close()
+print("OK abrir la mesa apaga el aviso de 'pide la cuenta'")
 for iid in win2.tree_prod.get_children():
     if "Baklava" in win2.tree_prod.item(iid, "text"):
         win2.tree_prod.selection_set(iid)

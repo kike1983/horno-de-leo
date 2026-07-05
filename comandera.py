@@ -64,7 +64,7 @@ def detener(servidor):
 def _estado():
     con = _d["db"]()
     mesas = con.execute(
-        "SELECT numero, mozo, comensales, abierta FROM mesas "
+        "SELECT numero, mozo, comensales, abierta, pide_cuenta FROM mesas "
         "ORDER BY numero").fetchall()
     totales = dict(con.execute(
         "SELECT mesa, SUM(precio*cantidad) FROM pedidos GROUP BY mesa"))
@@ -76,8 +76,9 @@ def _estado():
         "nombre": _d["cfg_get"]("nombre", "El Horno de Leo"),
         "categorias": _d["categorias"],
         "mesas": [{"numero": n, "mozo": mz or "", "comensales": c or 0,
-                   "abierta": bool(a), "total": totales.get(n, 0) or 0}
-                  for n, mz, c, a in mesas],
+                   "abierta": bool(a), "total": totales.get(n, 0) or 0,
+                   "cuenta": bool(pc)}
+                  for n, mz, c, a, pc in mesas],
         "productos": [{"id": pid, "nombre": nom, "precio": pre,
                        "categoria": cat,
                        "agotado": bool(usar) and (stk or 0) <= 0,
@@ -89,7 +90,7 @@ def _estado():
 def _mesa_detalle(numero):
     con = _d["db"]()
     fila = con.execute(
-        "SELECT mozo, comensales FROM mesas WHERE numero=?",
+        "SELECT mozo, comensales, pide_cuenta FROM mesas WHERE numero=?",
         (numero,)).fetchone()
     if not fila:
         con.close()
@@ -99,7 +100,7 @@ def _mesa_detalle(numero):
         "WHERE mesa=? ORDER BY comensal, id", (numero,)).fetchall()
     con.close()
     return {"numero": numero, "mozo": fila[0] or "",
-            "comensales": fila[1] or 0,
+            "comensales": fila[1] or 0, "cuenta": bool(fila[2]),
             "items": [{"nombre": n, "precio": p, "cantidad": c, "comensal": co}
                       for n, p, c, co in items],
             "total": sum(p * c for _, p, c, _ in items)}
@@ -188,6 +189,31 @@ def _recibir_pedido(datos):
     return 200, {"ok": True, "total": total}
 
 
+def _pedir_cuenta(datos):
+    """El mozo avisa desde el celular que la mesa quiere la cuenta
+    (o anula el aviso). Devuelve (código_http, respuesta_json)."""
+    try:
+        mesa = int(datos["mesa"])
+        pedir = 1 if datos.get("pedir", True) else 0
+    except (KeyError, ValueError, TypeError):
+        return 400, {"error": "Pedido mal formado."}
+    con = _d["db"]()
+    try:
+        if not con.execute("SELECT 1 FROM mesas WHERE numero=?",
+                           (mesa,)).fetchone():
+            return 404, {"error": f"La mesa {mesa} no existe."}
+        if pedir and not con.execute(
+                "SELECT 1 FROM pedidos WHERE mesa=? LIMIT 1",
+                (mesa,)).fetchone():
+            return 400, {"error": "La mesa no tiene pedidos."}
+        con.execute("UPDATE mesas SET pide_cuenta=? WHERE numero=?",
+                    (pedir, mesa))
+        con.commit()
+    finally:
+        con.close()
+    return 200, {"ok": True, "cuenta": bool(pedir)}
+
+
 def _imprimir_comanda(mesa, mozo, items):
     """Comanda de cocina solo con lo recién pedido (si está activada)."""
     if _d["cfg_get"]("mozos_comanda", "1") != "1":
@@ -262,7 +288,8 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
-            if urlparse(self.path).path != "/api/pedido":
+            ruta = urlparse(self.path).path
+            if ruta not in ("/api/pedido", "/api/cuenta"):
                 self._json({"error": "No existe."}, 404)
                 return
             try:
@@ -271,7 +298,10 @@ class _Handler(BaseHTTPRequestHandler):
             except (ValueError, json.JSONDecodeError):
                 self._json({"error": "Pedido mal formado."}, 400)
                 return
-            codigo, respuesta = _recibir_pedido(datos)
+            if ruta == "/api/pedido":
+                codigo, respuesta = _recibir_pedido(datos)
+            else:
+                codigo, respuesta = _pedir_cuenta(datos)
             self._json(respuesta, codigo)
         except (BrokenPipeError, ConnectionResetError):
             pass
@@ -360,6 +390,15 @@ PAGINA = """<!doctype html>
   .itemPedido .quien{color:var(--suave); font-size:.78rem}
   .totalMesa{text-align:right; font-weight:700; color:var(--bordo);
              padding-top:8px}
+  #btnCuenta{width:100%; margin-top:10px; border:1px solid var(--naranja);
+             background:#fff; color:var(--naranja); border-radius:10px;
+             padding:12px; font-size:.95rem; font-weight:700;
+             font-family:inherit}
+  #btnCuenta.pedida{background:var(--verde); border-color:var(--verde);
+                    color:#fff}
+  .mesa .cuenta{font-size:.78rem; font-weight:700; background:#fff;
+                color:var(--rojo); border-radius:999px; padding:2px 8px;
+                margin-top:4px; display:inline-block}
   /* --- catálogo --- */
   #chips,#chipsPara{display:flex; gap:8px; overflow-x:auto; padding:2px 0 10px}
   #chipsPara{padding-bottom:2px}
@@ -448,6 +487,7 @@ PAGINA = """<!doctype html>
     <h2 style="margin-top:0">Ya en la mesa</h2>
     <div id="yaPedido"></div>
     <div class="totalMesa" id="totalMesa"></div>
+    <button id="btnCuenta"></button>
   </div>
   <div class="tarjeta">
     <h2 style="margin-top:0">Cargar el pedido para</h2>
@@ -523,6 +563,7 @@ function renderMesas() {
     b.appendChild(el("div", "num", "Mesa " + m.numero));
     b.appendChild(el("div", "sub", m.mozo || "(sin mozo)"));
     b.appendChild(el("div", "sub", m.abierta ? fmt(m.total) : "Libre"));
+    if (m.cuenta) b.appendChild(el("div", "cuenta", "🧾 pidió la cuenta"));
     b.onclick = () => abrirMesa(m.numero);
     g.appendChild(b);
   }
@@ -627,6 +668,20 @@ function renderYaPedido() {
     caja.appendChild(fila);
   }
   $("totalMesa").textContent = "Total: " + fmt(detalle.total);
+  const btn = $("btnCuenta");
+  btn.className = detalle.cuenta ? "pedida" : "";
+  btn.textContent = detalle.cuenta
+    ? "✔ Cuenta pedida — tocá para anular el aviso"
+    : "🧾 Pedir la cuenta";
+}
+
+async function pedirCuenta() {
+  try {
+    const r = await api("/api/cuenta", {mesa: mesa, pedir: !detalle.cuenta});
+    detalle.cuenta = r.cuenta;
+    toast(detalle.cuenta ? "Le avisamos a la caja 🧾" : "Aviso anulado");
+    renderYaPedido();
+  } catch (e) { alert(e.message); }
 }
 
 function renderChips() {
@@ -773,6 +828,7 @@ $("btnMozo").onclick = salir;
 $("btnEntrar").onclick = entrar;
 $("inNombre").onkeydown = e => { if (e.key === "Enter") entrar(); };
 $("btnEnviar").onclick = enviar;
+$("btnCuenta").onclick = pedirCuenta;
 $("btnCarrito").onclick = () => {
   const c = $("carrito");
   c.style.display = c.style.display === "block" ? "none" : "block";

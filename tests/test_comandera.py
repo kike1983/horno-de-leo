@@ -137,6 +137,18 @@ texto = open(sorted(glob.glob(os.path.join(
 assert "Mozo/a: Caro" in texto
 print("OK la mesa conserva al mozo que la abrió (Caro, no Juan)")
 
+# --- pedir la cuenta desde el celular (y anular el aviso)
+code, resp = POST("/api/cuenta", {"mesa": 3})
+assert code == 200 and resp["cuenta"] is True
+assert GET("/api/estado")["mesas"][2]["cuenta"] is True
+assert GET("/api/mesa?n=3")["cuenta"] is True
+code, resp = POST("/api/cuenta", {"mesa": 3, "pedir": False})
+assert code == 200 and resp["cuenta"] is False
+assert GET("/api/estado")["mesas"][2]["cuenta"] is False
+assert POST("/api/cuenta", {"mesa": 1})[0] == 400    # mesa sin pedidos
+assert POST("/api/cuenta", {"mesa": 99})[0] == 404   # mesa inexistente
+print("OK pedir la cuenta: aviso, anulación y validaciones")
+
 # --- rechazo por falta de stock (no queda baklava, pido 5) y nada cambia
 code, resp = POST("/api/pedido", {
     "mesa": 3, "mozo": "Caro",

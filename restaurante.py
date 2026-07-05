@@ -200,6 +200,7 @@ def init_db():
     _agregar_columna(cur, "productos", "stock", "INTEGER DEFAULT 0")
     _agregar_columna(cur, "productos", "stock_min", "INTEGER DEFAULT 0")
     _agregar_columna(cur, "ventas", "medio", "TEXT DEFAULT 'Efectivo'")
+    _agregar_columna(cur, "mesas", "pide_cuenta", "INTEGER DEFAULT 0")
     # WAL: la interfaz y la comandera pueden leer/escribir a la vez
     cur.execute("PRAGMA journal_mode = WAL")
 
@@ -553,8 +554,12 @@ class MesaWindow(tk.Toplevel):
         row = con.execute(
             "SELECT mozo, comensales FROM mesas WHERE numero=?",
             (numero,)).fetchone()
+        # al abrir la mesa, el operador ya vio el aviso de "pide la cuenta"
+        con.execute("UPDATE mesas SET pide_cuenta=0 WHERE numero=?", (numero,))
+        con.commit()
         con.close()
         mozo, comensales = row if row else ("", 0)
+        app.refrescar_mesas()
 
         # --- encabezado -------------------------------------------------
         top = ttk.Frame(self, style="Panel.TFrame", padding=10)
@@ -907,8 +912,8 @@ class MesaWindow(tk.Toplevel):
             con.execute("UPDATE productos SET stock=stock+? "
                         "WHERE nombre=? AND usar_stock=1", (cant, nombre))
         con.execute("DELETE FROM pedidos WHERE mesa=?", (self.numero,))
-        con.execute("UPDATE mesas SET abierta=0, comensales=0, mozo='' "
-                    "WHERE numero=?", (self.numero,))
+        con.execute("UPDATE mesas SET abierta=0, comensales=0, mozo='', "
+                    "pide_cuenta=0 WHERE numero=?", (self.numero,))
         con.commit()
         con.close()
         self.app.refrescar_mesas()
@@ -1021,8 +1026,8 @@ class MesaWindow(tk.Toplevel):
              for _, nombre, precio, cant, _ in pedidos])
         cur.execute("DELETE FROM pedidos WHERE mesa=?", (self.numero,))
         # la mesa queda libre y sin mozo hasta que alguien la vuelva a abrir
-        cur.execute("UPDATE mesas SET abierta=0, comensales=0, mozo='' "
-                    "WHERE numero=?", (self.numero,))
+        cur.execute("UPDATE mesas SET abierta=0, comensales=0, mozo='', "
+                    "pide_cuenta=0 WHERE numero=?", (self.numero,))
         con.commit()
         con.close()
 
@@ -1236,7 +1241,8 @@ class App(tk.Tk):
     def _datos_mesas(self):
         con = db()
         mesas = con.execute(
-            "SELECT numero, mozo, abierta FROM mesas ORDER BY numero").fetchall()
+            "SELECT numero, mozo, abierta, pide_cuenta FROM mesas "
+            "ORDER BY numero").fetchall()
         totales = dict(con.execute(
             "SELECT mesa, SUM(precio*cantidad) FROM pedidos GROUP BY mesa").fetchall())
         con.close()
@@ -1247,14 +1253,24 @@ class App(tk.Tk):
             w.destroy()
         mesas, totales = self._datos_mesas()
         self._snap_mesas = (mesas, totales)
+        # campanita cuando una mesa nueva pide la cuenta desde el celular
+        pidiendo = {n for n, _, a, pc in mesas if a and pc}
+        if pidiendo - getattr(self, "_pidiendo_cuenta", set()):
+            self.bell()
+        self._pidiendo_cuenta = pidiendo
         columnas = 5
         for i in range(columnas):
             self.frame_grilla.columnconfigure(i, weight=1)
-        for idx, (numero, mozo, abierta) in enumerate(mesas):
+        for idx, (numero, mozo, abierta, pide_cuenta) in enumerate(mesas):
             total = totales.get(numero, 0) or 0
             estado = fmt(total) if abierta else "Libre"
+            if abierta and pide_cuenta:
+                estado += "  ·  🧾 CUENTA"
             texto = f"Mesa {numero}\n{mozo or '(sin mozo)'}\n{estado}"
-            color = COL_OCUPADA if abierta else COL_LIBRE
+            if abierta:
+                color = COL_ACCENT2 if pide_cuenta else COL_OCUPADA
+            else:
+                color = COL_LIBRE
             btn = tk.Button(self.frame_grilla, text=texto, bg=color, fg="white",
                             font=(FONT, 11, "bold"), relief="flat", cursor="hand2",
                             activebackground=COL_ACCENT2, activeforeground="white",
