@@ -72,6 +72,9 @@ Desde el celular se puede:
   a la cuenta general o a un comensal). Respeta el control de stock.
 - Enviar el pedido: la mesa se marca ocupada en la PC al instante y, si está
   activado, **la comanda de cocina se imprime sola** con lo recién pedido.
+- **Pedir la cuenta** (botón 🧾): en la PC la mesa se pone naranja con
+  "🧾 CUENTA" y suena la campana; el aviso se apaga al abrir la mesa,
+  cobrarla o cancelarla, y se puede anular desde el celular.
 
 Al cobrar la mesa (o cancelarla) queda libre **y sin mozo**, hasta que
 alguien la vuelva a abrir.
