@@ -32,6 +32,8 @@ import comandera  # servidor web para que los mozos pidan desde el celular
 
 # ---------------------------------------------------------------- rutas / constantes
 
+VERSION = "1.1"
+
 APP_DIR = os.path.join(os.path.expanduser("~"), ".restaurante_armenio")
 DB_PATH = os.path.join(APP_DIR, "restaurante.db")
 RECIBOS_DIR = os.path.join(APP_DIR, "recibos")
@@ -1029,7 +1031,8 @@ class MesaWindow(tk.Toplevel):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Gestión — " + cfg_get("nombre", "El Horno de Leo"))
+        self.title("Gestión — " + cfg_get("nombre", "El Horno de Leo")
+                   + f"  ·  v{VERSION}")
         self.geometry("1180x720")
         self.minsize(980, 620)
         self.configure(bg=COL_BG)
@@ -1759,7 +1762,8 @@ class App(tk.Tk):
         cfg_set("eslogan", self.var_c_eslogan.get().strip())
         cfg_set("direccion", self.var_c_dir.get().strip())
         cfg_set("telefono", self.var_c_tel.get().strip())
-        self.title("Gestión — " + cfg_get("nombre", "Restaurante"))
+        self.title("Gestión — " + cfg_get("nombre", "Restaurante")
+                   + f"  ·  v{VERSION}")
         messagebox.showinfo("Configuración", "Datos guardados.", parent=self)
 
     def _guardar_impresora(self):
