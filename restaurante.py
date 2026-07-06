@@ -32,7 +32,7 @@ import comandera  # servidor web para que los mozos pidan desde el celular
 
 # ---------------------------------------------------------------- rutas / constantes
 
-VERSION = "1.3"
+VERSION = "1.4"
 
 APP_DIR = os.path.join(os.path.expanduser("~"), ".restaurante_armenio")
 DB_PATH = os.path.join(APP_DIR, "restaurante.db")
@@ -327,6 +327,57 @@ def _escpos_bytes(texto):
     return data
 
 
+def _imprimir_raw_windows(nombre, data):
+    """Manda bytes crudos (ESC/POS) a una impresora instalada en Windows.
+    `nombre` es el nombre tal como figura en el panel de impresoras de
+    Windows; vacío = la predeterminada. Con el tipo de dato RAW el spooler
+    pasa los bytes directo al puerto, así que alcanza con cualquier driver
+    (incluso "Generic / Text Only")."""
+    import ctypes
+    from ctypes import wintypes
+
+    class DOC_INFO_1(ctypes.Structure):
+        _fields_ = [("pDocName", wintypes.LPWSTR),
+                    ("pOutputFile", wintypes.LPWSTR),
+                    ("pDatatype", wintypes.LPWSTR)]
+
+    ws = ctypes.WinDLL("winspool.drv")
+    ws.OpenPrinterW.argtypes = [wintypes.LPWSTR,
+                                ctypes.POINTER(wintypes.HANDLE),
+                                ctypes.c_void_p]
+    ws.StartDocPrinterW.argtypes = [wintypes.HANDLE, wintypes.DWORD,
+                                    ctypes.c_void_p]
+    ws.WritePrinter.argtypes = [wintypes.HANDLE, ctypes.c_char_p,
+                                wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+    for fn in (ws.StartPagePrinter, ws.EndPagePrinter,
+               ws.EndDocPrinter, ws.ClosePrinter):
+        fn.argtypes = [wintypes.HANDLE]
+
+    if not nombre:
+        n = wintypes.DWORD(0)
+        ws.GetDefaultPrinterW(None, ctypes.byref(n))
+        buf = ctypes.create_unicode_buffer(max(n.value, 1))
+        if not ws.GetDefaultPrinterW(buf, ctypes.byref(n)):
+            raise OSError("Windows no tiene una impresora predeterminada.")
+        nombre = buf.value
+    h = wintypes.HANDLE()
+    if not ws.OpenPrinterW(nombre, ctypes.byref(h), None):
+        raise OSError(f'No existe la impresora "{nombre}" en Windows '
+                      "(el nombre tiene que ser igual al del panel "
+                      "de impresoras).")
+    try:
+        doc = DOC_INFO_1("Ticket Horno de Leo", None, "RAW")
+        if not ws.StartDocPrinterW(h, 1, ctypes.byref(doc)):
+            raise OSError(f'La impresora "{nombre}" no aceptó el trabajo.')
+        ws.StartPagePrinter(h)
+        escrito = wintypes.DWORD(0)
+        ws.WritePrinter(h, data, len(data), ctypes.byref(escrito))
+        ws.EndPagePrinter(h)
+        ws.EndDocPrinter(h)
+    finally:
+        ws.ClosePrinter(h)
+
+
 def _imprimir_sistema(ruta):
     if sys.platform.startswith("win"):
         os.startfile(ruta, "print")  # impresora predeterminada de Windows
@@ -360,8 +411,15 @@ def imprimir_texto(texto, prefijo="recibo"):
                 s.sendall(_escpos_bytes(texto))
             return ruta, None
         if modo == "dispositivo":
-            with open(cfg_get("imp_dev", "/dev/usb/lp0"), "wb") as dev:
-                dev.write(_escpos_bytes(texto))
+            destino = cfg_get("imp_dev", "").strip()
+            if sys.platform.startswith("win"):
+                # En Windows el campo es el nombre de la impresora instalada
+                # (vacío o una ruta /dev heredada = la predeterminada).
+                nombre = "" if destino.startswith("/dev") else destino
+                _imprimir_raw_windows(nombre, _escpos_bytes(texto))
+            else:
+                with open(destino or "/dev/usb/lp0", "wb") as dev:
+                    dev.write(_escpos_bytes(texto))
             return ruta, None
         error = _imprimir_sistema(ruta)
         return ruta, error
@@ -1755,19 +1813,28 @@ class App(tk.Tk):
         ttk.Entry(imp, textvariable=self.var_imp_red, width=24)\
             .grid(row=2, column=0, columnspan=2, sticky="w", padx=(24, 0),
                   pady=(0, 4))
-        ttk.Radiobutton(imp, text="Térmica ESC/POS por USB — dispositivo",
+        ttk.Radiobutton(imp, text="Térmica ESC/POS por USB",
                         value="dispositivo", variable=self.var_imp_modo)\
             .grid(row=3, column=0, columnspan=2, sticky="w", pady=(2, 0))
-        self.var_imp_dev = tk.StringVar(value=cfg_get("imp_dev"))
+        dev_guardado = cfg_get("imp_dev")
+        if sys.platform.startswith("win") and dev_guardado.startswith("/dev"):
+            dev_guardado = ""  # valor viejo de Linux: en Windows no sirve
+        self.var_imp_dev = tk.StringVar(value=dev_guardado)
         ttk.Entry(imp, textvariable=self.var_imp_dev, width=24)\
             .grid(row=4, column=0, columnspan=2, sticky="w", padx=(24, 0),
+                  pady=(0, 2))
+        ttk.Label(imp, foreground="gray",
+                  text=("En Windows: el nombre de la impresora tal como "
+                        "figura en el panel\nde impresoras (vacío = la "
+                        "predeterminada). En Linux: /dev/usb/lp0."))\
+            .grid(row=5, column=0, columnspan=2, sticky="w", padx=(24, 0),
                   pady=(0, 4))
         self.var_imp_corte = tk.BooleanVar(value=cfg_get("imp_corte", "1") == "1")
         ttk.Checkbutton(imp, text="Cortar el papel al final (térmicas)",
                         variable=self.var_imp_corte)\
-            .grid(row=5, column=0, columnspan=2, sticky="w", pady=(6, 2))
+            .grid(row=6, column=0, columnspan=2, sticky="w", pady=(6, 2))
         fila_imp = ttk.Frame(imp)
-        fila_imp.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        fila_imp.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         ttk.Button(fila_imp, text="💾  Guardar impresora",
                    command=self._guardar_impresora).pack(side="left")
         ttk.Button(fila_imp, text="🖨  Ticket de prueba",
