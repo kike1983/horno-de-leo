@@ -32,7 +32,7 @@ import comandera  # servidor web para que los mozos pidan desde el celular
 
 # ---------------------------------------------------------------- rutas / constantes
 
-VERSION = "1.4"
+VERSION = "1.4.1"
 
 APP_DIR = os.path.join(os.path.expanduser("~"), ".restaurante_armenio")
 DB_PATH = os.path.join(APP_DIR, "restaurante.db")
@@ -316,11 +316,18 @@ def armar_recibo(titulo, mozo, items, total, nota="", medio=""):
     return "\n".join(lineas)
 
 
+# Caracteres comunes que no existen en CP850, con su reemplazo imprimible
+# (si no, la térmica los saca como "?").
+_ESCPOS_EQUIV = str.maketrans({"•": "·", "–": "-", "—": "-", "‘": "'",
+                               "’": "'", "“": '"', "”": '"', "…": "...",
+                               "€": "EUR", "★": "*", "✓": "-"})
+
+
 def _escpos_bytes(texto):
     """Convierte el ticket a comandos ESC/POS (init, texto CP850, avance y corte)."""
     data = b"\x1b\x40"          # ESC @  inicializar
     data += b"\x1b\x74\x02"     # ESC t 2  página de códigos CP850 (acentos)
-    data += texto.encode("cp850", errors="replace")
+    data += texto.translate(_ESCPOS_EQUIV).encode("cp850", errors="replace")
     data += b"\n\n\n\n"
     if cfg_get("imp_corte", "1") == "1":
         data += b"\x1d\x56\x42\x00"  # GS V B 0  corte parcial
