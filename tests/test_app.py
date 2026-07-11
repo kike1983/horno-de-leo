@@ -342,5 +342,71 @@ assert fila[1] == "Delivery" and "Karen" in fila[2], fila
 app.var_canal_rep.set("Todos")
 print("OK reporte de ventas con filtro por canal")
 
+# ================================================= v1.6: actualizador
+
+import json, threading, functools
+import http.server
+
+assert r._numeros_version("1.5.1") == (1, 5, 1)
+assert r._numeros_version("1.10") > r._numeros_version("1.9")
+assert r._numeros_version("basura") == (0,)
+
+SRV_DIR = tempfile.mkdtemp(prefix="horno_update_")
+def publicar(version, cuerpo_py="VERSION = 'nuevo'\n"):
+    with open(os.path.join(SRV_DIR, "version.json"), "w", encoding="utf-8") as f:
+        json.dump({"version": version, "archivos": ["restaurante.py"],
+                   "novedades": "prueba"}, f)
+    with open(os.path.join(SRV_DIR, "restaurante.py"), "w", encoding="utf-8") as f:
+        f.write(cuerpo_py)
+
+handler = functools.partial(http.server.SimpleHTTPRequestHandler,
+                            directory=SRV_DIR)
+httpd = http.server.HTTPServer(("127.0.0.1", 0), handler)
+threading.Thread(target=httpd.serve_forever, daemon=True).start()
+r.cfg_set("update_url", f"http://127.0.0.1:{httpd.server_address[1]}")
+
+# misma versión (o más vieja): no ofrece nada
+publicar(r.VERSION)
+assert r.consultar_actualizacion() is None
+publicar("0.1")
+assert r.consultar_actualizacion() is None
+
+# versión más nueva: se descarga y reemplaza (con respaldo .anterior)
+publicar("99.0")
+info = r.consultar_actualizacion()
+assert info and info["version"] == "99.0" and info["novedades"] == "prueba"
+destino = tempfile.mkdtemp(prefix="horno_destino_")
+with open(os.path.join(destino, "restaurante.py"), "w") as f:
+    f.write("viejo")
+r.descargar_actualizacion(info, carpeta=destino)
+assert open(os.path.join(destino, "restaurante.py")).read() == "VERSION = 'nuevo'\n"
+assert open(os.path.join(destino, "restaurante.py.anterior")).read() == "viejo"
+print("OK actualizador: detecta versión nueva, descarga y respalda")
+
+# un .py que no compila se rechaza y no toca nada
+publicar("100.0", cuerpo_py="def roto(:\n")
+info = r.consultar_actualizacion()
+fallo = False
+try:
+    r.descargar_actualizacion(info, carpeta=destino)
+except SyntaxError:
+    fallo = True
+assert fallo
+assert open(os.path.join(destino, "restaurante.py")).read() == "VERSION = 'nuevo'\n"
+print("OK actualizador: una descarga rota no pisa el programa")
+
+# nombres con ruta se ignoran (seguridad) => sin archivos válidos, error
+fallo = False
+try:
+    r.descargar_actualizacion({"version": "101", "archivos": ["../pwn.py"]},
+                              carpeta=destino)
+except ValueError:
+    fallo = True
+assert fallo and not os.path.exists(os.path.join(destino, "pwn.py"))
+print("OK actualizador: rechaza rutas fuera de la carpeta del programa")
+
+httpd.shutdown()
+r.cfg_set("update_url", "")
+
 app.destroy()
 print("\nTODAS LAS PRUEBAS PASARON")

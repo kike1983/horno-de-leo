@@ -1,0 +1,131 @@
+EL HORNO DE LEO - Comandera para mozos (celulares)
+===================================================
+
+Con la comandera, los mozos toman los pedidos desde el celular
+y llegan al instante a la PC: la mesa se marca ocupada, descuenta
+stock y (si esta activado) la comanda de cocina se imprime sola.
+El cobro de la mesa se hace siempre desde la PC.
+
+No hay que instalar nada en los celulares. Funciona con cualquier
+Android o iPhone conectado al MISMO WIFI que la PC.
+
+
+PUESTA EN MARCHA (una sola vez)
+-------------------------------
+
+1. Abrir el programa en la PC (HornoDeLeo.bat).
+   La comandera arranca sola.
+
+2. LA PRIMERA VEZ Windows muestra un aviso del Firewall
+   preguntando si permite conexiones de red para Python.
+   Marcar la casilla "Redes privadas" y tocar "Permitir acceso".
+   (Si se toco "Cancelar" por error: Panel de control ->
+   Firewall de Windows -> Permitir una aplicacion, y habilitar
+   "python" o "pythonw" en redes privadas.)
+
+3. En el programa, ir a la pestania Configuracion ->
+   "Comandera para mozos". Ahi aparece la direccion, por ejemplo:
+
+        http://192.168.1.50:8750
+
+4. En el celular del mozo: conectarse al wifi del local, abrir
+   el navegador (Chrome) y escribir esa direccion tal cual.
+
+5. Para que quede como una app: en Chrome, tocar los tres
+   puntitos -> "Agregar a pantalla de inicio". Queda un icono
+   "Comandera" que abre a pantalla completa.
+   (En iPhone: Safari -> boton compartir -> "Agregar a inicio".)
+
+
+IP FIJA PARA LA PC (importante)
+-------------------------------
+
+El router le da una direccion a la PC y esa direccion puede
+cambiar cuando se reinicia el router o la PC. Si cambia, los
+celulares dejan de encontrar la comandera. Para que no cambie
+nunca, hay que fijarla. La forma mas prolija es hacerlo EN EL
+ROUTER (opcion A); si no se puede, se hace en Windows (opcion B).
+
+OPCION A - Reserva en el router (recomendada):
+
+  1. En la PC, abrir "Simbolo del sistema" (buscar "cmd") y
+     escribir:   ipconfig /all
+     Anotar de la conexion que se usa (Wi-Fi o Ethernet):
+       - "Direccion IPv4"        (ej: 192.168.1.50)
+       - "Direccion fisica/MAC"  (ej: A1-B2-C3-D4-E5-F6)
+       - "Puerta de enlace"      (ej: 192.168.1.1)
+
+  2. En un navegador, entrar a la puerta de enlace
+     (ej: http://192.168.1.1). La clave del router suele estar
+     en una etiqueta pegada abajo del aparato.
+
+  3. Buscar la seccion que se llame "DHCP", "Reserva de
+     direcciones", "IP estatica" o "Dispositivos conectados"
+     (el nombre cambia segun la marca del router).
+
+  4. Elegir la PC en la lista (por su MAC) y reservarle la
+     direccion que ya tiene. Guardar.
+
+  Listo: el router le va a dar SIEMPRE esa direccion a la PC.
+
+OPCION B - Dejar que el programa la fije (mas facil):
+
+  La primera vez que el programa se abre en Windows, ofrece
+  fijar la IP automaticamente: decir que si y aceptar el
+  permiso de administrador que pide Windows. Listo.
+
+  Si se dijo que no, se puede hacer despues desde el programa:
+  Configuracion -> "Comandera para mozos" -> boton
+  "Fijar la IP de esta PC". Muestra la configuracion que va a
+  dejar fija (IP, mascara, puerta de enlace, DNS) y pide
+  confirmar. Al lado esta el boton "Volver a IP automatica"
+  para deshacerlo.
+
+  Nota: si algun dia otro aparato del local apareciera con la
+  misma direccion (conflicto de IP), usar la opcion A (reserva
+  en el router), que es la mas prolija.
+
+Despues de fijar la IP, verificar en el programa (Configuracion
+-> Comandera) que la direccion sea la esperada, y avisarles a los
+mozos si cambio.
+
+
+SUGERENCIAS PARA QUE TODO FUNCIONE BIEN
+---------------------------------------
+
+- MISMO WIFI: los celulares tienen que estar en la misma red que
+  la PC. Ojo con las redes "de invitados": muchas veces aislan
+  los dispositivos entre si y la comandera no va a responder.
+  Usar la red principal del local.
+
+- QUE LA PC NO SE DUERMA: si la PC se suspende, la comandera se
+  corta. En Configuracion -> Sistema -> Energia, poner
+  "Suspender: Nunca" (la pantalla si se puede apagar).
+
+- El programa tiene que estar ABIERTO en la PC para que la
+  comandera funcione (arranca y se apaga junto con el programa).
+
+- DATOS MOVILES: si un celular tiene wifi y datos a la vez y no
+  carga la pagina, probar apagando los datos moviles un momento;
+  algunos celulares intentan salir por datos y no encuentran la
+  direccion (que es interna del local).
+
+- SENIAL: si en alguna zona del salon el wifi llega debil, los
+  pedidos van a tardar o fallar. Acercar el router o poner un
+  repetidor. Si un pedido falla por conexion, el celular avisa
+  y NO se pierde nada: se vuelve a tocar ENVIAR.
+
+- PUERTO: la comandera usa el puerto 8750. Se puede cambiar en
+  Configuracion -> Comandera (y volver a compartir la direccion).
+
+- TRUCO QR: agregando ?mesa=3 al final de la direccion se abre
+  esa mesa directo, por ejemplo  http://192.168.1.50:8750/?mesa=3
+  Se puede generar un QR distinto por mesa y pegarlo en la mesa.
+
+- STOCK Y COMANDA: la comandera respeta el control de stock
+  (muestra "quedan X" y bloquea sin stock) y la impresion
+  automatica de la comanda se prende/apaga en Configuracion ->
+  "Imprimir comanda de cocina al recibir un pedido".
+
+- Si la impresora falla, la comanda queda igual guardada como
+  archivo en la carpeta de recibos (boton en Configuracion).

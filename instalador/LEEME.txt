@@ -1,0 +1,30 @@
+EL HORNO DE LEO - Gestion del restaurante
+=========================================
+
+COMO INSTALAR (2 minutos):
+
+  1) Guardar este zip en la PC (por ejemplo en Descargas) y hacerle
+     clic derecho > "Extraer todo..." > Extraer.
+
+  2) Abrir la carpeta extraida y hacer DOBLE CLIC en:  INSTALAR.bat
+
+     * Si Windows muestra un cartel azul que dice "Windows protegio
+       su PC", tocar "Mas informacion" y despues "Ejecutar de todas
+       formas". Es normal: pasa con cualquier programa que no viene
+       de la tienda de Microsoft.
+
+  3) Listo. Queda el icono "El Horno de Leo" en el escritorio y el
+     programa se abre solo.
+
+LA VERSION ANTERIOR SE BORRA SOLA al instalar. Las ventas, los
+productos, los precios y la configuracion NO se pierden: se guardan
+en otra carpeta que la instalacion nunca toca.
+
+ACTUALIZACIONES AUTOMATICAS:
+Cada vez que se abre, el programa se fija solo si hay una version
+nueva (necesita internet). Si hay, muestra un aviso con las novedades
+y con un clic se actualiza y se reinicia. No hay que hacer nada mas.
+
+La primera vez que se abra, Windows puede preguntar por el firewall
+(para la comandera de los mozos): tocar "Permitir acceso".
+Mas detalles de la comandera en INSTRUCCIONES-COMANDERA.txt.

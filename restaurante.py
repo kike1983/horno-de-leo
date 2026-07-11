@@ -26,6 +26,7 @@ import socket
 import shutil
 import sqlite3
 import datetime
+import threading
 import subprocess
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
@@ -34,7 +35,7 @@ import comandera  # servidor web para que los mozos pidan desde el celular
 
 # ---------------------------------------------------------------- rutas / constantes
 
-VERSION = "1.5.1"
+VERSION = "1.6"
 
 APP_DIR = os.path.join(os.path.expanduser("~"), ".restaurante_armenio")
 DB_PATH = os.path.join(APP_DIR, "restaurante.db")
@@ -257,7 +258,9 @@ def init_db():
             ("imp_corte", "1"),
             ("mozos_activo", "1"),
             ("mozos_puerto", str(comandera.PUERTO_DEFECTO)),
-            ("mozos_comanda", "1")]:
+            ("mozos_comanda", "1"),
+            ("update_auto", "1"),
+            ("update_url", URL_ACTUALIZACIONES)]:
         cur.execute("INSERT OR IGNORE INTO config(clave, valor) VALUES (?,?)",
                     (clave, valor))
     con.commit()
@@ -277,6 +280,74 @@ def cfg_set(clave, valor):
                 (clave, valor))
     con.commit()
     con.close()
+
+
+# ---------------------------------------------------------------- actualizaciones
+# El programa se puede actualizar solo: consulta version.json en el sitio
+# del proyecto y, si hay una versión más nueva, baja los archivos, deja
+# copia .anterior de los viejos y se reinicia. Así se le hacen mejoras al
+# local a la distancia. Los datos nunca se tocan (viven en ~/.restaurante_armenio).
+
+URL_ACTUALIZACIONES = ""  # se completa al publicar el proyecto en GitHub
+
+
+def _numeros_version(v):
+    """'1.5.1' -> (1, 5, 1) para poder comparar versiones."""
+    try:
+        return tuple(int(p) for p in str(v).strip().split("."))
+    except ValueError:
+        return (0,)
+
+
+def url_actualizaciones():
+    url = cfg_get("update_url", URL_ACTUALIZACIONES).strip()
+    if url and not url.endswith("/"):
+        url += "/"
+    return url
+
+
+def consultar_actualizacion():
+    """Lee version.json del sitio de actualizaciones. Devuelve el dict si
+    hay una versión más nueva que la instalada; si no, None."""
+    import urllib.request
+    base = url_actualizaciones()
+    if not base:
+        return None
+    with urllib.request.urlopen(base + "version.json", timeout=10) as r:
+        info = json.loads(r.read().decode("utf-8"))
+    if _numeros_version(info.get("version")) > _numeros_version(VERSION):
+        return info
+    return None
+
+
+def descargar_actualizacion(info, carpeta=None):
+    """Baja los archivos de la versión nueva y reemplaza los del programa
+    (deja copia .anterior de cada uno). Primero descarga y verifica TODO;
+    si algo falla no se toca ningún archivo local."""
+    import urllib.request
+    base = url_actualizaciones()
+    carpeta = carpeta or os.path.dirname(os.path.abspath(__file__))
+    nombres = info.get("archivos") or ["restaurante.py", "comandera.py"]
+    descargados = []
+    for nombre in nombres:
+        if os.path.basename(nombre) != nombre:
+            continue  # por seguridad solo nombres de archivo, sin rutas
+        with urllib.request.urlopen(base + nombre, timeout=60) as r:
+            datos = r.read()
+        if nombre.endswith(".py"):
+            # que la actualización no rompa el programa: tiene que compilar
+            compile(datos.decode("utf-8"), nombre, "exec")
+        descargados.append((nombre, datos))
+    if not descargados:
+        raise ValueError("La actualización no trae archivos.")
+    for nombre, datos in descargados:
+        ruta = os.path.join(carpeta, nombre)
+        if os.path.exists(ruta):
+            shutil.copy2(ruta, ruta + ".anterior")
+        temporal = ruta + ".nuevo"
+        with open(temporal, "wb") as fh:
+            fh.write(datos)
+        os.replace(temporal, ruta)
 
 
 # ---------------------------------------------------------------- backup
@@ -1664,6 +1735,9 @@ class App(tk.Tk):
         self.after(600, self._avisar_faltantes)
         self.after(4000, self._auto_refresco)
         self.after(1000, self._escuchar_avisos)
+        if cfg_get("update_auto", "1") == "1" \
+                and not getattr(sys, "frozen", False):
+            self.after(3000, self._buscar_actualizacion_fondo)
         # primera vez en Windows: ofrecer dejar fija la IP de la PC
         if sys.platform.startswith("win") \
                 and cfg_get("ip_fija_ofrecida", "0") != "1":
@@ -1736,6 +1810,85 @@ class App(tk.Tk):
             self.bell()  # último recurso si no hay audio
         if veces > 1:
             self.after(400, lambda: self._campana(veces - 1))
+
+    # ------------------------------------------------ actualizaciones
+
+    def _buscar_actualizacion_fondo(self):
+        """Consulta en un hilo si hay versión nueva; si hay, la ofrece."""
+        def trabajo():
+            try:
+                info = consultar_actualizacion()
+            except Exception:
+                return  # sin internet o sitio caído: se prueba otro día
+            if info:
+                try:
+                    self.after(0, lambda: self._ofrecer_actualizacion(info))
+                except tk.TclError:
+                    pass  # la app se cerró mientras tanto
+        threading.Thread(target=trabajo, daemon=True).start()
+
+    def _buscar_actualizacion_manual(self):
+        self._guardar_actualizaciones(avisar=False)
+        if getattr(sys, "frozen", False):
+            messagebox.showinfo(
+                "Actualización", "Esta copia es un .exe congelado y no se "
+                "actualiza sola; usá la versión instalada con el zip.",
+                parent=self)
+            return
+        if not url_actualizaciones():
+            messagebox.showinfo(
+                "Actualización", "No hay una dirección de actualizaciones "
+                "configurada.", parent=self)
+            return
+        try:
+            info = consultar_actualizacion()
+        except Exception as e:
+            messagebox.showerror(
+                "Actualización", "No se pudo consultar si hay una versión "
+                f"nueva:\n{e}\n\n¿Esta PC tiene internet?", parent=self)
+            return
+        if info:
+            self._ofrecer_actualizacion(info)
+        else:
+            messagebox.showinfo(
+                "Actualización",
+                f"El programa ya está en la última versión ({VERSION}).",
+                parent=self)
+
+    def _ofrecer_actualizacion(self, info):
+        novedades = str(info.get("novedades", "")).strip()
+        mensaje = (f"Hay una versión nueva del programa: {info['version']} "
+                   f"(esta PC tiene la {VERSION}).\n\n")
+        if novedades:
+            mensaje += f"Novedades:\n{novedades}\n\n"
+        mensaje += ("¿Instalarla ahora? El programa se reinicia solo y "
+                    "las ventas, productos y configuración no se tocan.")
+        if not messagebox.askyesno("Actualización disponible", mensaje,
+                                   parent=self):
+            return
+        try:
+            descargar_actualizacion(info)
+        except Exception as e:
+            messagebox.showerror(
+                "Actualización", f"No se pudo actualizar:\n{e}\n\n"
+                "El programa sigue funcionando con la versión actual.",
+                parent=self)
+            return
+        messagebox.showinfo(
+            "Actualización",
+            f"Listo: se instaló la versión {info['version']}.\n"
+            "El programa se va a reiniciar.", parent=self)
+        self._reiniciar()
+
+    def _reiniciar(self):
+        """Vuelve a lanzar el programa (tras una actualización)."""
+        if self.comandera_srv:
+            comandera.detener(self.comandera_srv)  # soltar el puerto
+            self.comandera_srv = None
+        script = os.path.abspath(__file__)
+        subprocess.Popen([sys.executable, script],
+                         cwd=os.path.dirname(script))
+        self.destroy()
 
     # ------------------------------------------------ estilos
 
@@ -2521,9 +2674,36 @@ class App(tk.Tk):
                       justify="left").pack(side="left")
         self._actualizar_url_comandera()
 
+        # --- actualizaciones del programa
+        act = ttk.Labelframe(f, text=" Actualizaciones del programa ",
+                             padding=12)
+        act.grid(row=4, column=0, sticky="new", padx=(0, 10), pady=(10, 0))
+        act.columnconfigure(1, weight=1)
+        self.var_up_auto = tk.BooleanVar(
+            value=cfg_get("update_auto", "1") == "1")
+        ttk.Checkbutton(act, text="Buscar actualizaciones al abrir el "
+                        "programa (necesita internet)",
+                        variable=self.var_up_auto)\
+            .grid(row=0, column=0, columnspan=2, sticky="w", pady=2)
+        ttk.Label(act, text="Dirección de descarga:")\
+            .grid(row=1, column=0, sticky="w", pady=(4, 0))
+        self.var_up_url = tk.StringVar(
+            value=cfg_get("update_url", URL_ACTUALIZACIONES))
+        ttk.Entry(act, textvariable=self.var_up_url)\
+            .grid(row=1, column=1, sticky="ew", pady=(4, 0), padx=(6, 0))
+        fila_up = ttk.Frame(act)
+        fila_up.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        ttk.Button(fila_up, text="💾  Guardar",
+                   command=self._guardar_actualizaciones).pack(side="left")
+        ttk.Button(fila_up, text="🔄  Buscar actualización ahora",
+                   command=self._buscar_actualizacion_manual)\
+            .pack(side="left", padx=8)
+        ttk.Label(fila_up, text=f"Versión instalada: {VERSION}",
+                  foreground=COL_MUTED).pack(side="right")
+
         # --- mesas y mozos
         mesas = ttk.Labelframe(f, text=" Mesas y mozos ", padding=12)
-        mesas.grid(row=1, column=1, rowspan=3, sticky="nsew")
+        mesas.grid(row=1, column=1, rowspan=4, sticky="nsew")
         mesas.columnconfigure(0, weight=1)
         mesas.rowconfigure(2, weight=1)
 
@@ -2587,6 +2767,14 @@ class App(tk.Tk):
         self.title("Gestión — " + cfg_get("nombre", "Restaurante")
                    + f"  ·  v{VERSION}")
         messagebox.showinfo("Configuración", "Datos guardados.", parent=self)
+
+    def _guardar_actualizaciones(self, avisar=True):
+        cfg_set("update_auto", "1" if self.var_up_auto.get() else "0")
+        cfg_set("update_url", self.var_up_url.get().strip())
+        if avisar:
+            messagebox.showinfo("Actualizaciones",
+                                "Configuración de actualizaciones guardada.",
+                                parent=self)
 
     def _guardar_impresora(self):
         cfg_set("imp_modo", self.var_imp_modo.get())

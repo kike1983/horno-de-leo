@@ -25,6 +25,18 @@ el logo del local (`icono.png` / `icono.ico`) y deja automáticamente un acceso
 directo **"El Horno de Leo"** en el escritorio con ese ícono. El logo también
 aparece en la barra de título y de tareas del programa.
 
+**Zip instalador para el local:** `./armar_zip.sh` genera
+"Horno de Leo *versión*.zip" en el Escritorio (con Python portable adentro,
+no hace falta tener Python en la PC). En Windows: extraer el zip y doble
+clic en `INSTALAR.bat` — borra la versión anterior, instala en
+`%LOCALAPPDATA%\HornoDeLeo`, crea el acceso directo con el logo y abre el
+programa. Los datos nunca se tocan.
+
+**Actualizaciones automáticas:** al abrir, el programa consulta
+`version.json` en el sitio del proyecto (configurable en Configuración →
+Actualizaciones); si hay versión nueva avisa, la descarga con respaldo
+`.anterior` y se reinicia solo.
+
 Los datos se guardan en `~/.restaurante_armenio/`:
 - `restaurante.db` — base de datos (SQLite)
 - `recibos/` — copia de cada ticket emitido

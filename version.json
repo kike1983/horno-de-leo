@@ -1,0 +1,5 @@
+{
+  "version": "1.6",
+  "archivos": ["restaurante.py", "comandera.py", "icono.png", "icono.ico"],
+  "novedades": "Promociones por tiempo limitado, ventas de mostrador y delivery con registro propio, logo del local y actualizaciones automáticas."
+}
