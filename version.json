@@ -1,5 +1,5 @@
 {
-  "version": "1.6",
+  "version": "1.7",
   "archivos": ["restaurante.py", "comandera.py", "icono.png", "icono.ico"],
-  "novedades": "Promociones por tiempo limitado, ventas de mostrador y delivery con registro propio, logo del local y actualizaciones automáticas."
+  "novedades": "Agenda de clientes del delivery: al escribir el celular se completan solos el nombre y la dirección del cliente, con historial de pedidos y ventana para buscar o corregir clientes."
 }

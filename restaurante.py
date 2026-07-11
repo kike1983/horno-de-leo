@@ -35,7 +35,7 @@ import comandera  # servidor web para que los mozos pidan desde el celular
 
 # ---------------------------------------------------------------- rutas / constantes
 
-VERSION = "1.6"
+VERSION = "1.7"
 
 APP_DIR = os.path.join(os.path.expanduser("~"), ".restaurante_armenio")
 DB_PATH = os.path.join(APP_DIR, "restaurante.db")
@@ -227,6 +227,13 @@ def init_db():
             clave TEXT PRIMARY KEY,
             valor TEXT
         );
+        CREATE TABLE IF NOT EXISTS clientes(
+            telefono TEXT PRIMARY KEY,
+            nombre TEXT DEFAULT '',
+            direccion TEXT DEFAULT '',
+            pedidos INTEGER DEFAULT 0,
+            ultimo TEXT DEFAULT ''
+        );
     """)
     # migraciones de versiones anteriores
     _agregar_columna(cur, "productos", "usar_stock", "INTEGER DEFAULT 0")
@@ -278,6 +285,49 @@ def cfg_set(clave, valor):
     con = db()
     con.execute("INSERT OR REPLACE INTO config(clave, valor) VALUES (?,?)",
                 (clave, valor))
+    con.commit()
+    con.close()
+
+
+# ---------------------------------------------------------------- clientes (delivery)
+# Agenda que se arma sola: cada delivery cobrado guarda o actualiza al
+# cliente por su número de celular. Al volver a escribir ese número en una
+# venta, el nombre y la dirección se completan automáticamente.
+
+def tel_normalizado(telefono):
+    """Deja solo los dígitos: '099 123-456' -> '099123456'."""
+    return "".join(c for c in str(telefono) if c.isdigit())
+
+
+def cliente_buscar(telefono):
+    """Devuelve (nombre, direccion, pedidos, ultimo) o None."""
+    t = tel_normalizado(telefono)
+    if len(t) < 6:
+        return None
+    con = db()
+    row = con.execute("SELECT nombre, direccion, pedidos, ultimo "
+                      "FROM clientes WHERE telefono=?", (t,)).fetchone()
+    con.close()
+    return row
+
+
+def cliente_guardar(telefono, nombre, direccion):
+    """Alta o actualización automática al cobrar un delivery (suma 1 al
+    contador de pedidos; un dato vacío no pisa al guardado)."""
+    t = tel_normalizado(telefono)
+    if len(t) < 6:
+        return
+    con = db()
+    con.execute(
+        "INSERT INTO clientes(telefono, nombre, direccion, pedidos, ultimo) "
+        "VALUES (?,?,?,1,?) ON CONFLICT(telefono) DO UPDATE SET "
+        "nombre=CASE WHEN excluded.nombre<>'' THEN excluded.nombre "
+        "            ELSE nombre END, "
+        "direccion=CASE WHEN excluded.direccion<>'' THEN excluded.direccion "
+        "               ELSE direccion END, "
+        "pedidos=pedidos+1, ultimo=excluded.ultimo",
+        (t, (nombre or "").strip(), (direccion or "").strip(),
+         datetime.datetime.now().isoformat(timespec="seconds")))
     con.commit()
     con.close()
 
@@ -1301,6 +1351,152 @@ class MesaWindow(tk.Toplevel):
         self.destroy()
 
 
+# ---------------------------------------------------------------- agenda clientes
+
+class AgendaClientesWindow(tk.Toplevel):
+    """Agenda de clientes del delivery. Se arma sola con cada venta; acá
+    se puede buscar, corregir una dirección, borrar un cliente o (si se
+    abre desde una venta) elegirlo para esa venta."""
+
+    def __init__(self, padre, elegir=None):
+        super().__init__(padre)
+        self.elegir = elegir  # callback(telefono, nombre, direccion) o None
+        self.title("Agenda de clientes — Delivery")
+        self.geometry("820x520")
+        self.configure(bg=COL_BG)
+        self.transient(padre)
+
+        top = ttk.Frame(self, style="Panel.TFrame", padding=10)
+        top.pack(fill="x")
+        ttk.Label(top, text="📒  Clientes del delivery",
+                  style="Titulo.TLabel").pack(side="left")
+        ttk.Label(top, text="Buscar:", style="Panel.TLabel")\
+            .pack(side="left", padx=(30, 4))
+        self.var_buscar = tk.StringVar()
+        self.var_buscar.trace_add("write", lambda *a: self._cargar())
+        ttk.Entry(top, textvariable=self.var_buscar, width=24).pack(side="left")
+
+        cuerpo = ttk.Frame(self, style="Panel.TFrame", padding=10)
+        cuerpo.pack(fill="both", expand=True)
+        cuerpo.columnconfigure(0, weight=1)
+        cuerpo.rowconfigure(0, weight=1)
+
+        cols = ("telefono", "nombre", "direccion", "pedidos", "ultimo")
+        self.tree = ttk.Treeview(cuerpo, columns=cols, show="headings")
+        for col, txt, w, anchor in [
+                ("telefono", "Celular", 110, "w"),
+                ("nombre", "Cliente", 160, "w"),
+                ("direccion", "Dirección", 260, "w"),
+                ("pedidos", "Pedidos", 70, "center"),
+                ("ultimo", "Último", 90, "center")]:
+            self.tree.heading(col, text=txt)
+            self.tree.column(col, width=w, anchor=anchor)
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        sb = ttk.Scrollbar(cuerpo, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=sb.set)
+        sb.grid(row=0, column=1, sticky="ns")
+        self.tree.bind("<<TreeviewSelect>>", self._seleccionado)
+        if self.elegir:
+            self.tree.bind("<Double-1>", lambda e: self._usar())
+
+        form = ttk.Labelframe(cuerpo, text=" Ficha del cliente ", padding=10)
+        form.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        for i in (1, 3, 5):
+            form.columnconfigure(i, weight=1)
+        ttk.Label(form, text="Celular:").grid(row=0, column=0, sticky="w")
+        self.var_tel = tk.StringVar()
+        ttk.Entry(form, textvariable=self.var_tel, width=14)\
+            .grid(row=0, column=1, sticky="w", padx=(4, 12))
+        ttk.Label(form, text="Nombre:").grid(row=0, column=2, sticky="w")
+        self.var_nombre = tk.StringVar()
+        ttk.Entry(form, textvariable=self.var_nombre, width=18)\
+            .grid(row=0, column=3, sticky="ew", padx=(4, 12))
+        ttk.Label(form, text="Dirección:").grid(row=0, column=4, sticky="w")
+        self.var_dir = tk.StringVar()
+        ttk.Entry(form, textvariable=self.var_dir)\
+            .grid(row=0, column=5, sticky="ew", padx=(4, 0))
+
+        pie = ttk.Frame(self, style="Panel.TFrame", padding=(10, 0, 10, 10))
+        pie.pack(fill="x")
+        ttk.Button(pie, text="💾  Guardar cliente",
+                   command=self._guardar).pack(side="left")
+        ttk.Button(pie, text="🗑  Eliminar",
+                   command=self._eliminar).pack(side="left", padx=8)
+        if self.elegir:
+            ttk.Button(pie, text="✔  Usar en la venta", style="Accent.TButton",
+                       command=self._usar).pack(side="right")
+        ttk.Button(pie, text="Cerrar",
+                   command=self.destroy).pack(side="right", padx=8)
+
+        self._cargar()
+
+    def _cargar(self):
+        self.tree.delete(*self.tree.get_children())
+        filtro = f"%{self.var_buscar.get().strip()}%"
+        con = db()
+        rows = con.execute(
+            "SELECT telefono, nombre, direccion, pedidos, ultimo FROM clientes "
+            "WHERE telefono LIKE ? OR nombre LIKE ? OR direccion LIKE ? "
+            "ORDER BY nombre, telefono", (filtro, filtro, filtro)).fetchall()
+        con.close()
+        for tel, nombre, direccion, pedidos, ultimo in rows:
+            fecha = f"{ultimo[8:10]}/{ultimo[5:7]}/{ultimo[2:4]}" \
+                if len(ultimo) >= 10 else "-"
+            self.tree.insert("", "end", iid=tel,
+                             values=(tel, nombre or "-", direccion or "-",
+                                     pedidos, fecha))
+
+    def _seleccionado(self, _evento=None):
+        sel = self.tree.selection()
+        if not sel:
+            return
+        tel, nombre, direccion, _, _ = self.tree.item(sel[0], "values")
+        self.var_tel.set(tel)
+        self.var_nombre.set("" if nombre == "-" else nombre)
+        self.var_dir.set("" if direccion == "-" else direccion)
+
+    def _guardar(self):
+        tel = tel_normalizado(self.var_tel.get())
+        if len(tel) < 6:
+            messagebox.showerror("Cliente", "El celular tiene que tener al "
+                                 "menos 6 dígitos.", parent=self)
+            return
+        con = db()
+        con.execute(
+            "INSERT INTO clientes(telefono, nombre, direccion) VALUES (?,?,?) "
+            "ON CONFLICT(telefono) DO UPDATE SET nombre=excluded.nombre, "
+            "direccion=excluded.direccion",
+            (tel, self.var_nombre.get().strip(), self.var_dir.get().strip()))
+        con.commit()
+        con.close()
+        self._cargar()
+
+    def _eliminar(self):
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showinfo("Eliminar", "Seleccioná un cliente de la "
+                                "lista.", parent=self)
+            return
+        if not messagebox.askyesno("Eliminar",
+                                   "¿Eliminar el cliente seleccionado de la "
+                                   "agenda?", parent=self):
+            return
+        con = db()
+        con.execute("DELETE FROM clientes WHERE telefono=?", (sel[0],))
+        con.commit()
+        con.close()
+        self._cargar()
+
+    def _usar(self):
+        sel = self.tree.selection()
+        if not sel or not self.elegir:
+            return
+        tel, nombre, direccion, _, _ = self.tree.item(sel[0], "values")
+        self.elegir(tel, "" if nombre == "-" else nombre,
+                    "" if direccion == "-" else direccion)
+        self.destroy()
+
+
 # ---------------------------------------------------------------- venta directa
 
 class VentaDirectaWindow(tk.Toplevel):
@@ -1325,20 +1521,36 @@ class VentaDirectaWindow(tk.Toplevel):
         top.pack(fill="x")
         ttk.Label(top, text=f"{icono}  Venta {etiqueta}",
                   style="Titulo.TLabel").pack(side="left")
-        ttk.Label(top, text="Cliente:", style="Panel.TLabel")\
-            .pack(side="left", padx=(30, 4))
         self.var_cliente = tk.StringVar()
-        ttk.Entry(top, textvariable=self.var_cliente, width=18).pack(side="left")
         self.var_tel = tk.StringVar()
         self.var_dir = tk.StringVar()
+        # último dato autocompletado desde la agenda (para no pisar lo
+        # que el operador escriba a mano)
+        self._autocompletado = {"nombre": "", "direccion": ""}
         if canal == "delivery":
-            ttk.Label(top, text="Tel.:", style="Panel.TLabel")\
-                .pack(side="left", padx=(12, 4))
+            ttk.Label(top, text="Celular:", style="Panel.TLabel")\
+                .pack(side="left", padx=(24, 4))
             ttk.Entry(top, textvariable=self.var_tel, width=13).pack(side="left")
+            self.var_tel.trace_add("write", lambda *a: self._tel_cambiado())
+            ttk.Label(top, text="Cliente:", style="Panel.TLabel")\
+                .pack(side="left", padx=(10, 4))
+            ttk.Entry(top, textvariable=self.var_cliente, width=15)\
+                .pack(side="left")
             ttk.Label(top, text="Dirección:", style="Panel.TLabel")\
-                .pack(side="left", padx=(12, 4))
-            ttk.Entry(top, textvariable=self.var_dir, width=28)\
+                .pack(side="left", padx=(10, 4))
+            ttk.Entry(top, textvariable=self.var_dir, width=24)\
                 .pack(side="left", fill="x", expand=True)
+            ttk.Button(top, text="📒", width=3,
+                       command=self._abrir_agenda).pack(side="left", padx=(8, 0))
+            self.lbl_cli_info = ttk.Label(top, text="", style="Panel.TLabel",
+                                          foreground=COL_ACCENT2,
+                                          font=(FONT, 9, "bold"))
+            self.lbl_cli_info.pack(side="left", padx=(8, 0))
+        else:
+            ttk.Label(top, text="Cliente:", style="Panel.TLabel")\
+                .pack(side="left", padx=(30, 4))
+            ttk.Entry(top, textvariable=self.var_cliente, width=18)\
+                .pack(side="left")
 
         # --- cuerpo: productos a la izquierda, pedido a la derecha -------
         cuerpo = ttk.Frame(self, style="Panel.TFrame", padding=10)
@@ -1426,6 +1638,36 @@ class VentaDirectaWindow(tk.Toplevel):
                    command=self._cobrar).pack(side="right", padx=8)
 
         self._cargar_productos()
+
+    # ------------------------------------------------ agenda de clientes
+
+    def _tel_cambiado(self):
+        """Al escribir el celular, si es un cliente conocido se completan
+        solos el nombre y la dirección (sin pisar lo escrito a mano)."""
+        fila = cliente_buscar(self.var_tel.get())
+        if not fila:
+            self.lbl_cli_info.config(text="")
+            return
+        nombre, direccion, pedidos, _ = fila
+        if nombre and self.var_cliente.get().strip() in \
+                ("", self._autocompletado["nombre"]):
+            self.var_cliente.set(nombre)
+            self._autocompletado["nombre"] = nombre
+        if direccion and self.var_dir.get().strip() in \
+                ("", self._autocompletado["direccion"]):
+            self.var_dir.set(direccion)
+            self._autocompletado["direccion"] = direccion
+        self.lbl_cli_info.config(
+            text=f"📒 {pedidos} pedido(s) anteriores")
+
+    def _abrir_agenda(self):
+        AgendaClientesWindow(self, elegir=self._usar_cliente)
+
+    def _usar_cliente(self, telefono, nombre, direccion):
+        self._autocompletado = {"nombre": nombre, "direccion": direccion}
+        self.var_cliente.set(nombre)
+        self.var_dir.set(direccion)
+        self.var_tel.set(telefono)
 
     # ------------------------------------------------ catálogo
 
@@ -1649,6 +1891,12 @@ class VentaDirectaWindow(tk.Toplevel):
             con.commit()
         finally:
             con.close()
+
+        if self.canal == "delivery":
+            # agenda automática: el próximo pedido de este celular
+            # completa solo el nombre y la dirección
+            cliente_guardar(self.var_tel.get(), cliente,
+                            self.var_dir.get().strip())
 
         etiqueta = CANAL_NOMBRE[self.canal].upper()
         titulo = etiqueta + (f" — {cliente}" if cliente else "")
@@ -2043,6 +2291,9 @@ class App(tk.Tk):
                       padx=24, pady=14,
                       command=lambda c=canal: VentaDirectaWindow(self, c))\
                 .pack(side="left", padx=(0, 12))
+        ttk.Button(botones, text="📒  Agenda de clientes",
+                   command=lambda: AgendaClientesWindow(self))\
+            .pack(side="left", padx=(8, 0))
 
         ttk.Label(f, text="Ventas de hoy por mostrador y delivery:",
                   style="Panel.TLabel", font=(FONT, 10, "bold"))\

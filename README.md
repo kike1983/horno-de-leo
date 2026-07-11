@@ -53,6 +53,10 @@ Los datos se guardan en `~/.restaurante_armenio/`:
 - **Mostrador y delivery**: ventas sin mesa desde su propia pestaña.
   El delivery guarda cliente, teléfono y dirección (salen en el ticket y en
   la comanda de cocina). Cada canal queda registrado por separado.
+- **Agenda de clientes del delivery**: se arma sola con cada venta. Al
+  escribir el celular de un cliente conocido se completan solos el nombre y
+  la dirección (sin pisar lo escrito a mano) y se ve cuántas veces pidió.
+  Ventana propia para buscar, corregir, borrar o elegir un cliente.
 - **Productos**: la carta completa de El Horno de Leo ya está cargada
   (entradas, lehemeyuns, shawarmas, milanesas, pizzetas, bebidas, cervezas,
   vino y postres) con las categorías Entrada / Menú / Bebida / Postre.

@@ -342,6 +342,58 @@ assert fila[1] == "Delivery" and "Karen" in fila[2], fila
 app.var_canal_rep.set("Todos")
 print("OK reporte de ventas con filtro por canal")
 
+# ================================================= v1.7: agenda de clientes
+
+assert r.tel_normalizado("099 123-456") == "099123456"
+assert r.cliente_buscar("12345") is None          # muy corto
+assert r.cliente_buscar("099123456") is not None  # lo creó la venta delivery
+nombre_g, dir_g, pedidos_g, ultimo_g = r.cliente_buscar("099 123 456")
+assert nombre_g == "Karen" and dir_g == "Av. Italia 1234" and pedidos_g == 1
+assert ultimo_g[:4].isdigit()
+print("OK agenda: el delivery cobrado guardó al cliente solo")
+
+# segunda venta del mismo celular: suma pedidos y actualiza datos no vacíos
+r.cliente_guardar("099123456", "", "Av. Italia 1234 apto 2")
+nombre_g, dir_g, pedidos_g, _ = r.cliente_buscar("099123456")
+assert nombre_g == "Karen"                       # el vacío no pisa
+assert dir_g == "Av. Italia 1234 apto 2"
+assert pedidos_g == 2
+print("OK agenda: suma pedidos y un dato vacío no pisa el guardado")
+
+# autocompletado: al escribir el celular en una venta delivery nueva
+vd3 = r.VentaDirectaWindow(app, "delivery")
+vd3.var_tel.set("099123456")   # dispara el trace
+vd3.update()
+assert vd3.var_cliente.get() == "Karen"
+assert vd3.var_dir.get() == "Av. Italia 1234 apto 2"
+assert "2 pedido" in vd3.lbl_cli_info.cget("text")
+# lo escrito a mano no se pisa al re-autocompletar
+vd3.var_cliente.set("Karen Sarkissian")
+vd3.var_tel.set("099123456 ")  # re-dispara con el mismo cliente
+assert vd3.var_cliente.get() == "Karen Sarkissian"
+vd3.destroy()
+print("OK agenda: autocompleta nombre y dirección al escribir el celular")
+
+# ventana de agenda: buscar, guardar cambios y eliminar
+ag = r.AgendaClientesWindow(app)
+ag.update()
+assert len(ag.tree.get_children()) == 1
+ag.var_buscar.set("karen")
+assert len(ag.tree.get_children()) == 1
+ag.var_buscar.set("noexiste")
+assert len(ag.tree.get_children()) == 0
+ag.var_buscar.set("")
+ag.var_tel.set("098 765 432")
+ag.var_nombre.set("Vartan")
+ag.var_dir.set("Rivera 456")
+ag._guardar()
+assert r.cliente_buscar("098765432")[0] == "Vartan"
+ag.tree.selection_set("098765432")
+ag._eliminar()   # askyesno simulado en True
+assert r.cliente_buscar("098765432") is None
+ag.destroy()
+print("OK agenda: ventana con búsqueda, alta manual y eliminación")
+
 # ================================================= v1.6: actualizador
 
 import json, threading, functools
