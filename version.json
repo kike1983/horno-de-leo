@@ -1,5 +1,5 @@
 {
-  "version": "1.7.1",
+  "version": "1.8",
   "archivos": ["restaurante.py", "comandera.py", "icono.png", "icono.ico"],
-  "novedades": "Ticket de delivery más claro: el título dice solo DELIVERY y el cliente, celular y dirección salen en renglones propios (Cliente / Celular / Entregar en)."
+  "novedades": "Letra más grande en el programa y en el ticket de la térmica (doble alto, se puede apagar en Configuración → Impresora); scroll con la rueda del mouse en Configuración, mesas y ficha de producto; la dirección de actualizaciones ya no se puede modificar por accidente."
 }

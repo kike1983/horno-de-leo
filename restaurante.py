@@ -30,12 +30,13 @@ import threading
 import subprocess
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
+from tkinter import font as tkfont
 
 import comandera  # servidor web para que los mozos pidan desde el celular
 
 # ---------------------------------------------------------------- rutas / constantes
 
-VERSION = "1.7.1"
+VERSION = "1.8"
 
 APP_DIR = os.path.join(os.path.expanduser("~"), ".restaurante_armenio")
 DB_PATH = os.path.join(APP_DIR, "restaurante.db")
@@ -263,6 +264,7 @@ def init_db():
             ("imp_red", "192.168.1.100:9100"),
             ("imp_dev", "/dev/usb/lp0"),
             ("imp_corte", "1"),
+            ("imp_grande", "1"),
             ("mozos_activo", "1"),
             ("mozos_puerto", str(comandera.PUERTO_DEFECTO)),
             ("mozos_comanda", "1"),
@@ -351,7 +353,9 @@ def _numeros_version(v):
 
 
 def url_actualizaciones():
-    url = cfg_get("update_url", URL_ACTUALIZACIONES).strip()
+    # si la configuración guardada quedara vacía o rota, manda la
+    # dirección grabada en el código: nunca se pierden las actualizaciones
+    url = cfg_get("update_url", "").strip() or URL_ACTUALIZACIONES
     if url and not url.endswith("/"):
         url += "/"
     return url
@@ -492,6 +496,10 @@ def _escpos_bytes(texto):
     """Convierte el ticket a comandos ESC/POS (init, texto CP850, avance y corte)."""
     data = b"\x1b\x40"          # ESC @  inicializar
     data += b"\x1b\x74\x02"     # ESC t 2  página de códigos CP850 (acentos)
+    if cfg_get("imp_grande", "1") == "1":
+        # ESC ! 16: letra doble alto (entran los mismos 42 caracteres
+        # por renglón, pero el doble de altos: más fácil de leer)
+        data += b"\x1b\x21\x10"
     data += texto.translate(_ESCPOS_EQUIV).encode("cp850", errors="replace")
     data += b"\n\n\n\n"
     if cfg_get("imp_corte", "1") == "1":
@@ -878,7 +886,7 @@ class MesaWindow(tk.Toplevel):
         self._chips_cat = {}
         for c in ["Todas"] + CATEGORIAS:
             b = tk.Button(fila_cat, text=c, relief="flat", cursor="hand2",
-                          font=(FONT, 9, "bold"), bd=0, padx=10, pady=4,
+                          font=(FONT, 10, "bold"), bd=0, padx=10, pady=4,
                           command=lambda c=c: self._elegir_categoria(c))
             b.pack(side="left", padx=(0, 5))
             self._chips_cat[c] = b
@@ -935,7 +943,7 @@ class MesaWindow(tk.Toplevel):
         ttk.Button(fila2, text="Quitar ítem",
                    command=self._quitar).pack(side="left")
         self.lbl_total = ttk.Label(fila2, text="Total: $ 0,00",
-                                   font=(FONT, 13, "bold"), foreground=COL_ACCENT)
+                                   font=(FONT, 14, "bold"), foreground=COL_ACCENT)
         self.lbl_total.pack(side="right")
 
         # --- acciones ----------------------------------------------------
@@ -1355,6 +1363,56 @@ class MesaWindow(tk.Toplevel):
         self.destroy()
 
 
+# ---------------------------------------------------------------- marco con scroll
+
+class MarcoScroll(ttk.Frame):
+    """Marco con scroll vertical (barra + rueda del mouse) para que el
+    contenido entre en pantallas chicas. Lo que se arma adentro va en
+    `self.interior`. La barra aparece solo cuando hace falta."""
+
+    def __init__(self, padre, estilo="Panel.TFrame"):
+        super().__init__(padre, style=estilo)
+        self._cv = tk.Canvas(self, bg=COL_BG, highlightthickness=0)
+        self._sb = ttk.Scrollbar(self, orient="vertical",
+                                 command=self._cv.yview)
+        self._cv.configure(yscrollcommand=self._sb.set)
+        self._cv.pack(side="left", fill="both", expand=True)
+        self._sb.pack(side="right", fill="y")
+        self.interior = ttk.Frame(self._cv, style=estilo)
+        self._vent = self._cv.create_window((0, 0), window=self.interior,
+                                            anchor="nw")
+        self.interior.bind("<Configure>", self._ajustar)
+        self._cv.bind("<Configure>", lambda e: self._cv.itemconfigure(
+            self._vent, width=e.width))
+        # la rueda del mouse funciona en cualquier parte del marco,
+        # salvo sobre widgets que tienen scroll propio
+        self.bind("<Enter>", self._activar_rueda)
+        self.bind("<Leave>", self._desactivar_rueda)
+
+    def _ajustar(self, _evento=None):
+        self._cv.configure(scrollregion=self._cv.bbox("all") or (0, 0, 0, 0))
+
+    def _sobra(self):
+        return self.interior.winfo_height() > self._cv.winfo_height()
+
+    def _rueda(self, evento):
+        if evento.widget.winfo_class() in ("Treeview", "Listbox", "Text",
+                                           "TCombobox"):
+            return  # esos widgets scrollean solos
+        if self._sobra():
+            arriba = getattr(evento, "num", 0) == 4 or evento.delta > 0
+            self._cv.yview_scroll(-1 if arriba else 1, "units")
+
+    def _activar_rueda(self, _evento=None):
+        self.bind_all("<MouseWheel>", self._rueda)   # Windows
+        self.bind_all("<Button-4>", self._rueda)     # Linux
+        self.bind_all("<Button-5>", self._rueda)
+
+    def _desactivar_rueda(self, _evento=None):
+        for ev in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self.unbind_all(ev)
+
+
 # ---------------------------------------------------------------- agenda clientes
 
 class AgendaClientesWindow(tk.Toplevel):
@@ -1548,7 +1606,7 @@ class VentaDirectaWindow(tk.Toplevel):
                        command=self._abrir_agenda).pack(side="left", padx=(8, 0))
             self.lbl_cli_info = ttk.Label(top, text="", style="Panel.TLabel",
                                           foreground=COL_ACCENT2,
-                                          font=(FONT, 9, "bold"))
+                                          font=(FONT, 10, "bold"))
             self.lbl_cli_info.pack(side="left", padx=(8, 0))
         else:
             ttk.Label(top, text="Cliente:", style="Panel.TLabel")\
@@ -1574,7 +1632,7 @@ class VentaDirectaWindow(tk.Toplevel):
         self._chips_cat = {}
         for c in ["Todas"] + CATEGORIAS:
             b = tk.Button(fila_cat, text=c, relief="flat", cursor="hand2",
-                          font=(FONT, 9, "bold"), bd=0, padx=10, pady=4,
+                          font=(FONT, 10, "bold"), bd=0, padx=10, pady=4,
                           command=lambda c=c: self._elegir_categoria(c))
             b.pack(side="left", padx=(0, 5))
             self._chips_cat[c] = b
@@ -1626,7 +1684,7 @@ class VentaDirectaWindow(tk.Toplevel):
         ttk.Button(fila2, text="Quitar ítem",
                    command=self._quitar).pack(side="left")
         self.lbl_total = ttk.Label(fila2, text="Total: $ 0,00",
-                                   font=(FONT, 13, "bold"),
+                                   font=(FONT, 14, "bold"),
                                    foreground=COL_ACCENT)
         self.lbl_total.pack(side="right")
 
@@ -2152,32 +2210,40 @@ class App(tk.Tk):
     # ------------------------------------------------ estilos
 
     def _estilos(self):
+        # letra más grande en todo el programa (también en los campos de
+        # texto y menús, que usan las fuentes con nombre de Tk)
+        for nombre in ("TkDefaultFont", "TkTextFont", "TkMenuFont",
+                       "TkHeadingFont"):
+            try:
+                tkfont.nametofont(nombre).configure(family=FONT, size=11)
+            except tk.TclError:
+                pass
         st = ttk.Style(self)
         try:
             st.theme_use("clam")
         except tk.TclError:
             pass
         st.configure(".", background=COL_BG, foreground=COL_TEXT,
-                     font=(FONT, 10))
+                     font=(FONT, 11))
         st.configure("TNotebook", background=COL_BG, borderwidth=0)
-        st.configure("TNotebook.Tab", padding=(14, 8), font=(FONT, 10, "bold"))
+        st.configure("TNotebook.Tab", padding=(14, 8), font=(FONT, 11, "bold"))
         st.map("TNotebook.Tab",
                background=[("selected", COL_ACCENT)],
                foreground=[("selected", "white")])
         st.configure("Panel.TFrame", background=COL_BG)
         st.configure("Panel.TLabel", background=COL_BG)
         st.configure("Titulo.TLabel", background=COL_BG,
-                     font=(FONT, 15, "bold"), foreground=COL_ACCENT)
+                     font=(FONT, 16, "bold"), foreground=COL_ACCENT)
         st.configure("TLabelframe", background=COL_BG)
         st.configure("TLabelframe.Label", background=COL_BG,
-                     foreground=COL_ACCENT, font=(FONT, 10, "bold"))
-        st.configure("Treeview", rowheight=26, fieldbackground=COL_PANEL,
-                     background=COL_PANEL)
-        st.configure("Treeview.Heading", font=(FONT, 10, "bold"),
+                     foreground=COL_ACCENT, font=(FONT, 11, "bold"))
+        st.configure("Treeview", rowheight=30, fieldbackground=COL_PANEL,
+                     background=COL_PANEL, font=(FONT, 11))
+        st.configure("Treeview.Heading", font=(FONT, 11, "bold"),
                      background=COL_ACCENT, foreground="white")
         st.map("Treeview.Heading", background=[("active", COL_ACCENT2)])
         st.configure("Accent.TButton", background=COL_ACCENT,
-                     foreground="white", font=(FONT, 10, "bold"), padding=8)
+                     foreground="white", font=(FONT, 11, "bold"), padding=8)
         st.map("Accent.TButton",
                background=[("active", COL_ACCENT2), ("disabled", "#b9a7a9")])
         st.configure("TButton", padding=6)
@@ -2223,8 +2289,9 @@ class App(tk.Tk):
     def _armar_tab_mesas(self):
         ttk.Label(self.tab_mesas, text="Salón — tocá una mesa para atenderla",
                   style="Titulo.TLabel").pack(anchor="w", pady=(0, 10))
-        self.frame_grilla = ttk.Frame(self.tab_mesas, style="Panel.TFrame")
-        self.frame_grilla.pack(fill="both", expand=True)
+        sc = MarcoScroll(self.tab_mesas)
+        sc.pack(fill="both", expand=True)
+        self.frame_grilla = sc.interior
         leyenda = ttk.Frame(self.tab_mesas, style="Panel.TFrame")
         leyenda.pack(fill="x", pady=(10, 0))
         for color, texto in [(COL_LIBRE, "Libre"), (COL_OCUPADA, "Ocupada"),
@@ -2266,7 +2333,7 @@ class App(tk.Tk):
             else:
                 color = COL_LIBRE
             btn = tk.Button(self.frame_grilla, text=texto, bg=color, fg="white",
-                            font=(FONT, 11, "bold"), relief="flat", cursor="hand2",
+                            font=(FONT, 12, "bold"), relief="flat", cursor="hand2",
                             activebackground=COL_ACCENT2, activeforeground="white",
                             command=lambda n=numero: self.abrir_mesa(n))
             btn.grid(row=idx // columnas, column=idx % columnas,
@@ -2375,8 +2442,11 @@ class App(tk.Tk):
         self.tree_productos.grid(row=1, column=0, sticky="nsew", padx=(0, 10))
         self.tree_productos.bind("<<TreeviewSelect>>", self._producto_seleccionado)
 
-        form = ttk.Labelframe(f, text=" Ficha del producto ", padding=12)
-        form.grid(row=1, column=1, sticky="new")
+        sc_form = MarcoScroll(f)
+        sc_form.grid(row=1, column=1, sticky="nsew")
+        form = ttk.Labelframe(sc_form.interior, text=" Ficha del producto ",
+                              padding=12)
+        form.pack(fill="both", expand=True)
         form.columnconfigure(1, weight=1)
 
         ttk.Label(form, text="Nombre:").grid(row=0, column=0, sticky="w", pady=4)
@@ -2813,7 +2883,9 @@ class App(tk.Tk):
     # ================================================= TAB CONFIGURACIÓN
 
     def _armar_tab_config(self):
-        f = self.tab_cfg
+        sc = MarcoScroll(self.tab_cfg)
+        sc.pack(fill="both", expand=True)
+        f = sc.interior
         f.columnconfigure(0, weight=0, minsize=430)
         f.columnconfigure(1, weight=1)
         f.rowconfigure(3, weight=1)
@@ -2876,8 +2948,13 @@ class App(tk.Tk):
         ttk.Checkbutton(imp, text="Cortar el papel al final (térmicas)",
                         variable=self.var_imp_corte)\
             .grid(row=6, column=0, columnspan=2, sticky="w", pady=(6, 2))
+        self.var_imp_grande = tk.BooleanVar(
+            value=cfg_get("imp_grande", "1") == "1")
+        ttk.Checkbutton(imp, text="Letra grande en el ticket (doble alto, "
+                        "térmicas)", variable=self.var_imp_grande)\
+            .grid(row=7, column=0, columnspan=2, sticky="w", pady=(0, 2))
         fila_imp = ttk.Frame(imp)
-        fila_imp.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        fila_imp.grid(row=8, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         ttk.Button(fila_imp, text="💾  Guardar impresora",
                    command=self._guardar_impresora).pack(side="left")
         ttk.Button(fila_imp, text="🖨  Ticket de prueba",
@@ -2949,9 +3026,10 @@ class App(tk.Tk):
             .grid(row=0, column=0, columnspan=2, sticky="w", pady=2)
         ttk.Label(act, text="Dirección de descarga:")\
             .grid(row=1, column=0, sticky="w", pady=(4, 0))
-        self.var_up_url = tk.StringVar(
-            value=cfg_get("update_url", URL_ACTUALIZACIONES))
-        ttk.Entry(act, textvariable=self.var_up_url)\
+        # solo lectura: si se pudiera editar y alguien la borrara por
+        # accidente, el local se quedaría sin actualizaciones
+        self.var_up_url = tk.StringVar(value=url_actualizaciones())
+        ttk.Entry(act, textvariable=self.var_up_url, state="readonly")\
             .grid(row=1, column=1, sticky="ew", pady=(4, 0), padx=(6, 0))
         fila_up = ttk.Frame(act)
         fila_up.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
@@ -3032,7 +3110,6 @@ class App(tk.Tk):
 
     def _guardar_actualizaciones(self, avisar=True):
         cfg_set("update_auto", "1" if self.var_up_auto.get() else "0")
-        cfg_set("update_url", self.var_up_url.get().strip())
         if avisar:
             messagebox.showinfo("Actualizaciones",
                                 "Configuración de actualizaciones guardada.",
@@ -3043,6 +3120,7 @@ class App(tk.Tk):
         cfg_set("imp_red", self.var_imp_red.get().strip())
         cfg_set("imp_dev", self.var_imp_dev.get().strip())
         cfg_set("imp_corte", "1" if self.var_imp_corte.get() else "0")
+        cfg_set("imp_grande", "1" if self.var_imp_grande.get() else "0")
         messagebox.showinfo("Impresora", "Configuración de impresora guardada.",
                             parent=self)
 
@@ -3135,6 +3213,7 @@ class App(tk.Tk):
         cfg_set("imp_red", self.var_imp_red.get().strip())
         cfg_set("imp_dev", self.var_imp_dev.get().strip())
         cfg_set("imp_corte", "1" if self.var_imp_corte.get() else "0")
+        cfg_set("imp_grande", "1" if self.var_imp_grande.get() else "0")
         texto = armar_recibo("TICKET DE PRUEBA", "-",
                              [(1, "Prueba de impresión", 0)], 0,
                              nota="Si leés esto, la impresora funciona")

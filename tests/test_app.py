@@ -117,7 +117,11 @@ print("OK recibo con eslogan y medio de pago")
 data = r._escpos_bytes("Prueba áéíóú ñ")
 assert data.startswith(b"\x1b\x40\x1b\x74\x02") and data.endswith(b"\x1d\x56\x42\x00")
 assert "Prueba".encode() in data
-print("OK generación ESC/POS (init + CP850 + corte)")
+assert b"\x1b\x21\x10" in data          # letra grande (doble alto) activada
+r.cfg_set("imp_grande", "0")
+assert b"\x1b\x21\x10" not in r._escpos_bytes("Prueba")
+r.cfg_set("imp_grande", "1")
+print("OK generación ESC/POS (init + CP850 + letra grande + corte)")
 
 # --- estadísticas: datos y dibujo (tab 4 desde que existe Mostrador/Delivery)
 app.nb.select(4)
@@ -461,7 +465,14 @@ assert fallo and not os.path.exists(os.path.join(destino, "pwn.py"))
 print("OK actualizador: rechaza rutas fuera de la carpeta del programa")
 
 httpd.shutdown()
+
+# con la config vacía o rota, manda la dirección grabada en el código
+# (así nadie puede dejar al local sin actualizaciones por accidente)
 r.cfg_set("update_url", "")
+assert r.url_actualizaciones() == r.URL_ACTUALIZACIONES
+r.cfg_set("update_url", "   ")
+assert r.url_actualizaciones() == r.URL_ACTUALIZACIONES
+print("OK actualizador: la URL vacía cae a la dirección del código")
 
 app.destroy()
 print("\nTODAS LAS PRUEBAS PASARON")
