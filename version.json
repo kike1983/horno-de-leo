@@ -1,5 +1,5 @@
 {
-  "version": "1.7",
+  "version": "1.7.1",
   "archivos": ["restaurante.py", "comandera.py", "icono.png", "icono.ico"],
-  "novedades": "Agenda de clientes del delivery: al escribir el celular se completan solos el nombre y la dirección del cliente, con historial de pedidos y ventana para buscar o corregir clientes."
+  "novedades": "Ticket de delivery más claro: el título dice solo DELIVERY y el cliente, celular y dirección salen en renglones propios (Cliente / Celular / Entregar en)."
 }

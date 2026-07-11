@@ -316,8 +316,11 @@ con.close()
 recibo_dv = sorted(f for f in os.listdir(r.RECIBOS_DIR)
                    if f.startswith("recibo_delivery"))[-1]
 texto = open(os.path.join(r.RECIBOS_DIR, recibo_dv), encoding="utf-8").read()
-assert "DELIVERY" in texto and "Av. Italia 1234" in texto \
-    and "099123456" in texto, texto
+assert "*** DELIVERY ***" in texto, texto
+assert "Cliente: Karen" in texto, texto          # renglón propio, no en el título
+assert "Entregar en: Av. Italia 1234" in texto, texto
+assert "Celular: 099123456" in texto, texto
+assert "DELIVERY — Karen" not in texto and "Mozo/a" not in texto, texto
 print("OK venta delivery: cliente/tel/dirección en el registro y el ticket")
 
 # la pestaña Mostrador/Delivery lista las ventas de hoy

@@ -35,7 +35,7 @@ import comandera  # servidor web para que los mozos pidan desde el celular
 
 # ---------------------------------------------------------------- rutas / constantes
 
-VERSION = "1.7"
+VERSION = "1.7.1"
 
 APP_DIR = os.path.join(os.path.expanduser("~"), ".restaurante_armenio")
 DB_PATH = os.path.join(APP_DIR, "restaurante.db")
@@ -444,8 +444,10 @@ def linea_item(cantidad, nombre, subtotal):
     return izq + " " * (ANCHO_TICKET - len(izq) - len(der)) + der
 
 
-def armar_recibo(titulo, mozo, items, total, nota="", medio=""):
-    """items: lista de (cantidad, nombre, subtotal). Devuelve el texto del ticket."""
+def armar_recibo(titulo, mozo, items, total, nota="", medio="", extra=()):
+    """items: lista de (cantidad, nombre, subtotal). `extra` son renglones
+    que van debajo del título (datos del cliente en mostrador/delivery).
+    Con mozo=None no se imprime el renglón del mozo. Devuelve el texto."""
     ahora = datetime.datetime.now()
     lineas = [centrar(cfg_get("nombre", "El Horno de Leo"))]
     if cfg_get("eslogan"):
@@ -458,9 +460,11 @@ def armar_recibo(titulo, mozo, items, total, nota="", medio=""):
         "=" * ANCHO_TICKET,
         f"Fecha: {ahora:%d/%m/%Y %H:%M}",
         titulo,
-        f"Mozo/a: {mozo or '-'}",
-        "-" * ANCHO_TICKET,
     ]
+    if mozo is not None:
+        lineas.append(f"Mozo/a: {mozo or '-'}")
+    lineas.extend(extra)
+    lineas.append("-" * ANCHO_TICKET)
     for cantidad, nombre, subtotal in items:
         lineas.append(linea_item(cantidad, nombre, subtotal))
     lineas.append("-" * ANCHO_TICKET)
@@ -1899,11 +1903,17 @@ class VentaDirectaWindow(tk.Toplevel):
                             self.var_dir.get().strip())
 
         etiqueta = CANAL_NOMBRE[self.canal].upper()
-        titulo = etiqueta + (f" — {cliente}" if cliente else "")
-        nota = "\n".join(self._nota_delivery())
-        texto = armar_recibo(titulo, "",
+        extra = []
+        if cliente:
+            extra.append(f"Cliente: {cliente}")
+        if self.canal == "delivery":
+            if self.var_tel.get().strip():
+                extra.append(f"Celular: {self.var_tel.get().strip()}")
+            if self.var_dir.get().strip():
+                extra.append(f"Entregar en: {self.var_dir.get().strip()}")
+        texto = armar_recibo(f"*** {etiqueta} ***", None,
                              [(c, n, p * c) for _, n, p, c in self.items],
-                             total, nota=nota, medio=medio)
+                             total, medio=medio, extra=extra)
         problema = None
         if imprimir:
             _, problema = imprimir_texto(texto, f"recibo_{self.canal}")
