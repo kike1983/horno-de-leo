@@ -34,7 +34,7 @@ import comandera  # servidor web para que los mozos pidan desde el celular
 
 # ---------------------------------------------------------------- rutas / constantes
 
-VERSION = "1.5"
+VERSION = "1.5.1"
 
 APP_DIR = os.path.join(os.path.expanduser("~"), ".restaurante_armenio")
 DB_PATH = os.path.join(APP_DIR, "restaurante.db")
@@ -59,6 +59,14 @@ COL_GRID = "#e8e0d3"
 COL_BAJO = "#b3261e"
 
 FONT = "Segoe UI" if sys.platform.startswith("win") else "DejaVu Sans"
+
+
+def ruta_recurso(nombre):
+    """Archivo que acompaña al programa (icono, etc.). Funciona igual
+    ejecutando el .py suelto o dentro del .exe de PyInstaller."""
+    base = getattr(sys, "_MEIPASS",
+                   os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, nombre)
 
 
 def fmt(x):
@@ -1612,6 +1620,13 @@ class App(tk.Tk):
         self.geometry("1180x720")
         self.minsize(980, 620)
         self.configure(bg=COL_BG)
+        try:
+            # logo del local en la barra de título y la barra de tareas
+            # (True = también en todas las ventanas de mesa y de venta)
+            self._icono = tk.PhotoImage(file=ruta_recurso("icono.png"))
+            self.iconphoto(True, self._icono)
+        except Exception:
+            pass  # sin el archivo del logo el programa funciona igual
         self._estilos()
         self._ventanas_mesa = {}
         self._snap_mesas = None

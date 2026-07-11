@@ -19,9 +19,11 @@ python3 restaurante.py
 1. Instalar Python desde https://www.python.org/downloads/ (marcar "Add Python to PATH").
 2. Doble clic en `restaurante.py`, o en una terminal: `python restaurante.py`
 
-**Ejecutable .exe (sin instalar Python en cada PC):** copiar la carpeta a una
-PC con Windows y Python, y hacer doble clic en `crear_exe_windows.bat`.
-El ejecutable queda en `dist\HornoDeLeo.exe`.
+**Instalador para Windows:** copiar la carpeta a una PC con Windows y Python,
+y hacer doble clic en `crear_exe_windows.bat`. Crea `dist\HornoDeLeo.exe` con
+el logo del local (`icono.png` / `icono.ico`) y deja automáticamente un acceso
+directo **"El Horno de Leo"** en el escritorio con ese ícono. El logo también
+aparece en la barra de título y de tareas del programa.
 
 Los datos se guardan en `~/.restaurante_armenio/`:
 - `restaurante.db` — base de datos (SQLite)
