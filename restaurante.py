@@ -288,7 +288,8 @@ def cfg_set(clave, valor):
 # copia .anterior de los viejos y se reinicia. Así se le hacen mejoras al
 # local a la distancia. Los datos nunca se tocan (viven en ~/.restaurante_armenio).
 
-URL_ACTUALIZACIONES = ""  # se completa al publicar el proyecto en GitHub
+URL_ACTUALIZACIONES = ("https://raw.githubusercontent.com/"
+                       "kike1983/horno-de-leo/main/")
 
 
 def _numeros_version(v):
