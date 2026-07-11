@@ -3,11 +3,13 @@
 """
 El Horno de Leo — Gestión del restaurante
 ==========================================
-Sistema de administración: productos por categoría con control de stock,
-mesas con mozo asignado, cuentas por mesa o por comensal, medios de pago,
-impresión de recibos (impresora del sistema o térmica ESC/POS), comandas
-de cocina, estadísticas con gráficos, backup automático diario y comandera
-web para que los mozos tomen pedidos desde el celular (misma red WiFi).
+Sistema de administración: productos por categoría con control de stock y
+promociones por tiempo limitado, mesas con mozo asignado, cuentas por mesa
+o por comensal, ventas de mostrador y delivery con registro por canal,
+medios de pago, impresión de recibos (impresora del sistema o térmica
+ESC/POS), comandas de cocina, estadísticas con gráficos, backup automático
+diario y comandera web para que los mozos tomen pedidos desde el celular
+(misma red WiFi).
 
 Funciona en Linux y Windows con Python 3.8+ (solo usa la librería estándar).
 
@@ -32,7 +34,7 @@ import comandera  # servidor web para que los mozos pidan desde el celular
 
 # ---------------------------------------------------------------- rutas / constantes
 
-VERSION = "1.4.1"
+VERSION = "1.5"
 
 APP_DIR = os.path.join(os.path.expanduser("~"), ".restaurante_armenio")
 DB_PATH = os.path.join(APP_DIR, "restaurante.db")
@@ -68,6 +70,28 @@ def fmt(x):
 def fmt_corto(x):
     """Monto sin decimales para etiquetas de gráficos: 12.400"""
     return f"{x:,.0f}".replace(",", ".")
+
+
+# ---------------------------------------------------------------- promociones
+
+def promo_vigente(promo_precio, desde, hasta, hoy=None):
+    """True si el producto tiene un precio de promoción activo hoy.
+    `desde`/`hasta` son fechas AAAA-MM-DD (vacío = sin límite)."""
+    if not promo_precio or promo_precio <= 0:
+        return False
+    hoy = (hoy or datetime.date.today()).isoformat()
+    return (not desde or desde <= hoy) and (not hasta or hoy <= hasta)
+
+
+def precio_vigente(precio, promo_precio, desde, hasta):
+    """Precio a cobrar hoy: el de promoción si está activa, si no el normal."""
+    if promo_vigente(promo_precio, desde, hasta):
+        return promo_precio
+    return precio
+
+
+CANAL_NOMBRE = {"salon": "Salón", "mostrador": "Mostrador",
+                "delivery": "Delivery"}
 
 
 # ---------------------------------------------------------------- base de datos
@@ -201,6 +225,12 @@ def init_db():
     _agregar_columna(cur, "productos", "stock_min", "INTEGER DEFAULT 0")
     _agregar_columna(cur, "ventas", "medio", "TEXT DEFAULT 'Efectivo'")
     _agregar_columna(cur, "mesas", "pide_cuenta", "INTEGER DEFAULT 0")
+    # v1.5: promociones por tiempo y ventas de mostrador / delivery
+    _agregar_columna(cur, "productos", "promo_precio", "REAL DEFAULT 0")
+    _agregar_columna(cur, "productos", "promo_desde", "TEXT DEFAULT ''")
+    _agregar_columna(cur, "productos", "promo_hasta", "TEXT DEFAULT ''")
+    _agregar_columna(cur, "ventas", "canal", "TEXT DEFAULT 'salon'")
+    _agregar_columna(cur, "ventas", "cliente", "TEXT DEFAULT ''")
     # WAL: la interfaz y la comandera pueden leer/escribir a la vez
     cur.execute("PRAGMA journal_mode = WAL")
 
@@ -310,7 +340,8 @@ def armar_recibo(titulo, mozo, items, total, nota="", medio=""):
         lineas.append(f"Medio de pago: {medio}")
     lineas.append("=" * ANCHO_TICKET)
     if nota:
-        lineas.append(centrar(nota))
+        for renglon in nota.split("\n"):
+            lineas.append(centrar(renglon))
     lineas.append(centrar("Gracias por preferirnos!"))
     lineas.append("")
     return "\n".join(lineas)
@@ -438,7 +469,7 @@ def deps_comandera():
     """Funciones que el módulo comandera necesita (evita import circular)."""
     return {"db": db, "cfg_get": cfg_get, "centrar": centrar,
             "imprimir_texto": imprimir_texto, "categorias": CATEGORIAS,
-            "ancho": ANCHO_TICKET}
+            "ancho": ANCHO_TICKET, "precio_vigente": precio_vigente}
 
 
 # ---------------------------------------------------------------- IP fija (Windows)
@@ -725,6 +756,7 @@ class MesaWindow(tk.Toplevel):
         self.tree_prod.column("#0", width=230)
         self.tree_prod.column("precio", width=90, anchor="e")
         self.tree_prod.tag_configure("bajo", foreground=COL_BAJO)
+        self.tree_prod.tag_configure("promo", foreground=COL_ACCENT2)
         self.tree_prod.grid(row=1, column=0, columnspan=2, sticky="nsew")
         self.tree_prod.bind("<Double-1>", lambda e: self._agregar())
 
@@ -838,7 +870,8 @@ class MesaWindow(tk.Toplevel):
     def _cargar_productos(self):
         self.tree_prod.delete(*self.tree_prod.get_children())
         con = db()
-        sql = ("SELECT id, nombre, precio, categoria, usar_stock, stock, stock_min "
+        sql = ("SELECT id, nombre, precio, categoria, usar_stock, stock, "
+               "stock_min, promo_precio, promo_desde, promo_hasta "
                "FROM productos ")
         if self.var_cat.get() == "Todas":
             rows = con.execute(sql + "ORDER BY categoria, nombre").fetchall()
@@ -846,9 +879,13 @@ class MesaWindow(tk.Toplevel):
             rows = con.execute(sql + "WHERE categoria=? ORDER BY nombre",
                                (self.var_cat.get(),)).fetchall()
         con.close()
-        for pid, nombre, precio, cat, usar, stock, smin in rows:
+        for pid, nombre, precio, cat, usar, stock, smin, pp, pd, ph in rows:
             texto = nombre if self.var_cat.get() != "Todas" else f"[{cat}] {nombre}"
             tags = ()
+            if promo_vigente(pp, pd, ph):
+                texto += "  — PROMO"
+                tags = ("promo",)
+                precio = pp
             if usar:
                 if (stock or 0) <= 0:
                     texto += "  — SIN STOCK"
@@ -884,12 +921,14 @@ class MesaWindow(tk.Toplevel):
         cant = max(self.var_cant.get(), 1)
         con = db()
         row = con.execute(
-            "SELECT nombre, precio, usar_stock, stock FROM productos WHERE id=?",
+            "SELECT nombre, precio, usar_stock, stock, promo_precio, "
+            "promo_desde, promo_hasta FROM productos WHERE id=?",
             (pid,)).fetchone()
         if not row:
             con.close()
             return
-        nombre, precio, usar_stock, stock = row
+        nombre, precio, usar_stock, stock, pp, pdesde, phasta = row
+        precio = precio_vigente(precio, pp, pdesde, phasta)
         if usar_stock and (stock or 0) < cant:
             con.close()
             messagebox.showerror(
@@ -1182,6 +1221,387 @@ class MesaWindow(tk.Toplevel):
         self.destroy()
 
 
+# ---------------------------------------------------------------- venta directa
+
+class VentaDirectaWindow(tk.Toplevel):
+    """Venta sin mesa: mostrador (retiro en el local) o delivery (envío).
+    Los ítems viven en memoria y el stock se descuenta recién al cobrar,
+    así cerrar la ventana sin cobrar no deja nada colgado."""
+
+    def __init__(self, app, canal):
+        super().__init__(app)
+        self.app = app
+        self.canal = canal  # "mostrador" | "delivery"
+        etiqueta = CANAL_NOMBRE[canal]
+        icono = "🛍" if canal == "mostrador" else "🛵"
+        self.title(f"Venta {etiqueta}")
+        self.geometry("1020x640")
+        self.configure(bg=COL_BG)
+        self.transient(app)
+        self.items = []  # [pid, nombre, precio, cantidad]
+
+        # --- encabezado: datos del cliente -------------------------------
+        top = ttk.Frame(self, style="Panel.TFrame", padding=10)
+        top.pack(fill="x")
+        ttk.Label(top, text=f"{icono}  Venta {etiqueta}",
+                  style="Titulo.TLabel").pack(side="left")
+        ttk.Label(top, text="Cliente:", style="Panel.TLabel")\
+            .pack(side="left", padx=(30, 4))
+        self.var_cliente = tk.StringVar()
+        ttk.Entry(top, textvariable=self.var_cliente, width=18).pack(side="left")
+        self.var_tel = tk.StringVar()
+        self.var_dir = tk.StringVar()
+        if canal == "delivery":
+            ttk.Label(top, text="Tel.:", style="Panel.TLabel")\
+                .pack(side="left", padx=(12, 4))
+            ttk.Entry(top, textvariable=self.var_tel, width=13).pack(side="left")
+            ttk.Label(top, text="Dirección:", style="Panel.TLabel")\
+                .pack(side="left", padx=(12, 4))
+            ttk.Entry(top, textvariable=self.var_dir, width=28)\
+                .pack(side="left", fill="x", expand=True)
+
+        # --- cuerpo: productos a la izquierda, pedido a la derecha -------
+        cuerpo = ttk.Frame(self, style="Panel.TFrame", padding=10)
+        cuerpo.pack(fill="both", expand=True)
+        cuerpo.columnconfigure(0, weight=2)
+        cuerpo.columnconfigure(1, weight=3)
+        cuerpo.rowconfigure(0, weight=1)
+
+        izq = ttk.Labelframe(cuerpo, text=" Agregar producto ", padding=8)
+        izq.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        izq.columnconfigure(0, weight=1)
+        izq.rowconfigure(1, weight=1)
+
+        self.var_cat = tk.StringVar(value="Todas")
+        fila_cat = ttk.Frame(izq)
+        fila_cat.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+        self._chips_cat = {}
+        for c in ["Todas"] + CATEGORIAS:
+            b = tk.Button(fila_cat, text=c, relief="flat", cursor="hand2",
+                          font=(FONT, 9, "bold"), bd=0, padx=10, pady=4,
+                          command=lambda c=c: self._elegir_categoria(c))
+            b.pack(side="left", padx=(0, 5))
+            self._chips_cat[c] = b
+        self._pintar_chips()
+
+        self.tree_prod = ttk.Treeview(izq, columns=("precio",), height=12)
+        self.tree_prod.heading("#0", text="Producto")
+        self.tree_prod.heading("precio", text="Precio")
+        self.tree_prod.column("#0", width=230)
+        self.tree_prod.column("precio", width=90, anchor="e")
+        self.tree_prod.tag_configure("bajo", foreground=COL_BAJO)
+        self.tree_prod.tag_configure("promo", foreground=COL_ACCENT2)
+        self.tree_prod.grid(row=1, column=0, columnspan=2, sticky="nsew")
+        self.tree_prod.bind("<Double-1>", lambda e: self._agregar())
+
+        fila = ttk.Frame(izq)
+        fila.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        ttk.Label(fila, text="Cant.:").pack(side="left")
+        self.var_cant = tk.IntVar(value=1)
+        ttk.Spinbox(fila, from_=1, to=99, width=4,
+                    textvariable=self.var_cant).pack(side="left", padx=(2, 12))
+        ttk.Button(izq, text="Agregar al pedido  ➜", style="Accent.TButton",
+                   command=self._agregar).grid(row=3, column=0, columnspan=2,
+                                               sticky="ew", pady=(8, 0))
+
+        der = ttk.Labelframe(cuerpo, text=f" Pedido {etiqueta.lower()} ",
+                             padding=8)
+        der.grid(row=0, column=1, sticky="nsew")
+        der.columnconfigure(0, weight=1)
+        der.rowconfigure(0, weight=1)
+
+        cols = ("producto", "cant", "precio", "subtotal")
+        self.tree_pedido = ttk.Treeview(der, columns=cols, show="headings",
+                                        height=12)
+        for col, txt, w, anchor in [
+                ("producto", "Producto", 240, "w"),
+                ("cant", "Cant.", 50, "center"),
+                ("precio", "Precio", 90, "e"),
+                ("subtotal", "Subtotal", 100, "e")]:
+            self.tree_pedido.heading(col, text=txt)
+            self.tree_pedido.column(col, width=w, anchor=anchor)
+        self.tree_pedido.grid(row=0, column=0, sticky="nsew")
+        sb = ttk.Scrollbar(der, orient="vertical", command=self.tree_pedido.yview)
+        self.tree_pedido.configure(yscrollcommand=sb.set)
+        sb.grid(row=0, column=1, sticky="ns")
+
+        fila2 = ttk.Frame(der)
+        fila2.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        ttk.Button(fila2, text="Quitar ítem",
+                   command=self._quitar).pack(side="left")
+        self.lbl_total = ttk.Label(fila2, text="Total: $ 0,00",
+                                   font=(FONT, 13, "bold"),
+                                   foreground=COL_ACCENT)
+        self.lbl_total.pack(side="right")
+
+        # --- acciones -----------------------------------------------------
+        pie = ttk.Frame(self, style="Panel.TFrame", padding=10)
+        pie.pack(fill="x")
+        ttk.Button(pie, text="🖨  Comanda cocina",
+                   command=self._imprimir_comanda).pack(side="left")
+        ttk.Button(pie, text="Cerrar sin cobrar",
+                   command=self.destroy).pack(side="right")
+        ttk.Button(pie, text=f"💵  COBRAR {etiqueta.upper()}",
+                   style="Accent.TButton",
+                   command=self._cobrar).pack(side="right", padx=8)
+
+        self._cargar_productos()
+
+    # ------------------------------------------------ catálogo
+
+    def _elegir_categoria(self, categoria):
+        self.var_cat.set(categoria)
+        self._pintar_chips()
+        self._cargar_productos()
+
+    def _pintar_chips(self):
+        for c, b in self._chips_cat.items():
+            if c == self.var_cat.get():
+                b.config(bg=COL_ACCENT, fg="white",
+                         activebackground=COL_ACCENT2,
+                         activeforeground="white")
+            else:
+                b.config(bg=COL_PANEL, fg=COL_ACCENT,
+                         activebackground=COL_GRID,
+                         activeforeground=COL_ACCENT)
+
+    def _cargar_productos(self):
+        self.tree_prod.delete(*self.tree_prod.get_children())
+        con = db()
+        sql = ("SELECT id, nombre, precio, categoria, usar_stock, stock, "
+               "stock_min, promo_precio, promo_desde, promo_hasta "
+               "FROM productos ")
+        if self.var_cat.get() == "Todas":
+            rows = con.execute(sql + "ORDER BY categoria, nombre").fetchall()
+        else:
+            rows = con.execute(sql + "WHERE categoria=? ORDER BY nombre",
+                               (self.var_cat.get(),)).fetchall()
+        con.close()
+        for pid, nombre, precio, cat, usar, stock, smin, pp, pd, ph in rows:
+            texto = nombre if self.var_cat.get() != "Todas" else f"[{cat}] {nombre}"
+            tags = ()
+            if promo_vigente(pp, pd, ph):
+                texto += "  — PROMO"
+                tags = ("promo",)
+                precio = pp
+            if usar:
+                disponible = (stock or 0) - self._en_pedido(pid)
+                if disponible <= 0:
+                    texto += "  — SIN STOCK"
+                    tags = ("bajo",)
+                elif disponible <= (smin or 0):
+                    texto += f"  — quedan {int(disponible)}"
+                    tags = ("bajo",)
+            self.tree_prod.insert("", "end", iid=str(pid), text=texto,
+                                  values=(fmt(precio),), tags=tags)
+
+    def _en_pedido(self, pid):
+        """Unidades de ese producto ya cargadas en esta venta (el stock
+        se descuenta al cobrar, así que hay que restarlas a mano)."""
+        return sum(c for p, _, _, c in self.items if p == pid)
+
+    # ------------------------------------------------ pedido
+
+    def _agregar(self):
+        sel = self.tree_prod.selection()
+        if not sel:
+            messagebox.showinfo("Agregar", "Seleccioná un producto de la lista.",
+                                parent=self)
+            return
+        pid = int(sel[0])
+        cant = max(self.var_cant.get(), 1)
+        con = db()
+        row = con.execute(
+            "SELECT nombre, precio, usar_stock, stock, promo_precio, "
+            "promo_desde, promo_hasta FROM productos WHERE id=?",
+            (pid,)).fetchone()
+        con.close()
+        if not row:
+            return
+        nombre, precio, usar_stock, stock, pp, pdesde, phasta = row
+        precio = precio_vigente(precio, pp, pdesde, phasta)
+        if usar_stock and (stock or 0) - self._en_pedido(pid) < cant:
+            disponible = int((stock or 0) - self._en_pedido(pid))
+            messagebox.showerror(
+                "Sin stock",
+                f"No hay stock suficiente de \"{nombre}\" "
+                f"(quedan {max(disponible, 0)}).", parent=self)
+            return
+        for it in self.items:
+            if it[0] == pid and it[2] == precio:
+                it[3] += cant
+                break
+        else:
+            self.items.append([pid, nombre, precio, cant])
+        self.var_cant.set(1)
+        self._cargar_productos()
+        self._refrescar_pedido()
+
+    def _quitar(self):
+        sel = self.tree_pedido.selection()
+        if not sel:
+            return
+        for iid in sorted((int(i) for i in sel), reverse=True):
+            del self.items[iid]
+        self._cargar_productos()
+        self._refrescar_pedido()
+
+    def _refrescar_pedido(self):
+        self.tree_pedido.delete(*self.tree_pedido.get_children())
+        for i, (pid, nombre, precio, cant) in enumerate(self.items):
+            self.tree_pedido.insert("", "end", iid=str(i),
+                                    values=(nombre, cant, fmt(precio),
+                                            fmt(precio * cant)))
+        self.lbl_total.config(text=f"Total: {fmt(self._total())}")
+
+    def _total(self):
+        return sum(p * c for _, _, p, c in self.items)
+
+    def _nota_delivery(self):
+        """Renglones con los datos de entrega para el ticket y la comanda."""
+        renglones = []
+        if self.var_dir.get().strip():
+            renglones.append("Enviar a: " + self.var_dir.get().strip())
+        if self.var_tel.get().strip():
+            renglones.append("Tel: " + self.var_tel.get().strip())
+        return renglones
+
+    # ------------------------------------------------ impresión
+
+    def _imprimir_comanda(self):
+        if not self.items:
+            messagebox.showinfo("Comanda", "La venta no tiene productos.",
+                                parent=self)
+            return
+        ahora = datetime.datetime.now()
+        titulo = CANAL_NOMBRE[self.canal].upper()
+        lineas = [centrar("*** COMANDA COCINA ***"),
+                  f"{titulo}  -  {ahora:%H:%M}",
+                  f"Cliente: {self.var_cliente.get().strip() or '-'}"]
+        lineas += self._nota_delivery()
+        lineas.append("-" * ANCHO_TICKET)
+        for _, nombre, _, cant in self.items:
+            lineas.append(f"{cant:>2} x {nombre}")
+        lineas.append("")
+        ruta, error = imprimir_texto("\n".join(lineas), "comanda")
+        if error:
+            messagebox.showwarning(
+                "Impresión", f"No se pudo imprimir: {error}\n\n"
+                f"Copia guardada en:\n{ruta}", parent=self)
+
+    # ------------------------------------------------ cobro
+
+    def _cobrar(self):
+        if not self.items:
+            messagebox.showinfo("Cobrar", "La venta no tiene productos.",
+                                parent=self)
+            return
+        dlg = tk.Toplevel(self)
+        dlg.title(f"Cobrar {CANAL_NOMBRE[self.canal].lower()}")
+        dlg.configure(bg=COL_BG)
+        dlg.transient(self)
+        dlg.grab_set()
+
+        ttk.Label(dlg, text=f"Total: {fmt(self._total())}",
+                  style="Titulo.TLabel").pack(padx=25, pady=(15, 10))
+        fila_medio = ttk.Frame(dlg)
+        fila_medio.pack(anchor="w", padx=25)
+        ttk.Label(fila_medio, text="Medio de pago:").pack(side="left")
+        var_medio = tk.StringVar(value=MEDIOS_PAGO[0])
+        ttk.Combobox(fila_medio, textvariable=var_medio, state="readonly",
+                     values=MEDIOS_PAGO, width=16).pack(side="left", padx=8)
+        var_imprimir = tk.BooleanVar(value=True)
+        ttk.Checkbutton(dlg, text="Imprimir ticket",
+                        variable=var_imprimir).pack(anchor="w", padx=25,
+                                                    pady=(10, 5))
+        botones = ttk.Frame(dlg)
+        botones.pack(pady=15)
+        ttk.Button(botones, text="Cancelar",
+                   command=dlg.destroy).pack(side="left", padx=8)
+        ttk.Button(botones, text="Confirmar cobro", style="Accent.TButton",
+                   command=lambda: self._confirmar_cobro(
+                       dlg, var_imprimir.get(), var_medio.get()))\
+            .pack(side="left")
+
+    def _confirmar_cobro(self, dlg, imprimir, medio):
+        cliente = self.var_cliente.get().strip()
+        if self.canal == "delivery" and not (cliente or
+                                             self.var_dir.get().strip()):
+            messagebox.showerror(
+                "Delivery", "Cargá al menos el nombre del cliente o la "
+                "dirección de entrega.", parent=dlg)
+            return
+        total = self._total()
+
+        con = db()
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            # revalidar stock recién ahora (se descuenta al cobrar)
+            for pid, nombre, _, cant in self.items:
+                row = con.execute(
+                    "SELECT usar_stock, stock FROM productos WHERE id=?",
+                    (pid,)).fetchone()
+                if row and row[0] and (row[1] or 0) < self._en_pedido(pid):
+                    con.rollback()
+                    messagebox.showerror(
+                        "Sin stock",
+                        f"Se quedó sin stock \"{nombre}\" (quedan "
+                        f"{int(row[1] or 0)}). Ajustá la venta.", parent=dlg)
+                    return
+            for pid, _, _, cant in self.items:
+                con.execute("UPDATE productos SET stock=stock-? "
+                            "WHERE id=? AND usar_stock=1", (cant, pid))
+            datos_cliente = " · ".join(
+                [d for d in [cliente, self.var_tel.get().strip(),
+                             self.var_dir.get().strip()] if d])
+            cur = con.cursor()
+            cur.execute(
+                "INSERT INTO ventas(fecha, mesa, mozo, total, modo, medio, "
+                "canal, cliente) VALUES (?,?,?,?,?,?,?,?)",
+                (datetime.datetime.now().isoformat(timespec="seconds"),
+                 None, "", total, "una", medio, self.canal, datos_cliente))
+            venta_id = cur.lastrowid
+            cur.executemany(
+                "INSERT INTO venta_items(venta_id, nombre, cantidad, subtotal)"
+                " VALUES (?,?,?,?)",
+                [(venta_id, nombre, cant, precio * cant)
+                 for _, nombre, precio, cant in self.items])
+            con.commit()
+        finally:
+            con.close()
+
+        etiqueta = CANAL_NOMBRE[self.canal].upper()
+        titulo = etiqueta + (f" — {cliente}" if cliente else "")
+        nota = "\n".join(self._nota_delivery())
+        texto = armar_recibo(titulo, "",
+                             [(c, n, p * c) for _, n, p, c in self.items],
+                             total, nota=nota, medio=medio)
+        problema = None
+        if imprimir:
+            _, problema = imprimir_texto(texto, f"recibo_{self.canal}")
+        else:
+            nombre_arch = (f"recibo_{self.canal}_"
+                           f"{datetime.datetime.now():%Y%m%d_%H%M%S_%f}.txt")
+            with open(os.path.join(RECIBOS_DIR, nombre_arch), "w",
+                      encoding="utf-8") as f:
+                f.write(texto)
+
+        dlg.destroy()
+        msg = f"Venta {CANAL_NOMBRE[self.canal].lower()} cobrada: " \
+              f"{fmt(total)} ({medio})."
+        if problema:
+            if messagebox.askyesno(
+                    "Cobro registrado",
+                    msg + f"\n\nNo se pudo imprimir ({problema}).\n"
+                    "El ticket quedó guardado como archivo.\n"
+                    "¿Abrir la carpeta de recibos?", parent=self.app):
+                abrir_carpeta(RECIBOS_DIR)
+        else:
+            messagebox.showinfo("Cobro registrado", msg, parent=self.app)
+        self.app.refrescar_directas()
+        self.destroy()
+
+
 # ---------------------------------------------------------------- aplicación
 
 class App(tk.Tk):
@@ -1205,11 +1625,13 @@ class App(tk.Tk):
         nb = ttk.Notebook(self)
         nb.pack(fill="both", expand=True, padx=8, pady=8)
         self.tab_mesas = ttk.Frame(nb, style="Panel.TFrame", padding=10)
+        self.tab_dir = ttk.Frame(nb, style="Panel.TFrame", padding=10)
         self.tab_prod = ttk.Frame(nb, style="Panel.TFrame", padding=10)
         self.tab_rep = ttk.Frame(nb, style="Panel.TFrame", padding=10)
         self.tab_stats = ttk.Frame(nb, style="Panel.TFrame", padding=10)
         self.tab_cfg = ttk.Frame(nb, style="Panel.TFrame", padding=10)
         nb.add(self.tab_mesas, text="  🍽  Mesas  ")
+        nb.add(self.tab_dir, text="  🛵  Mostrador/Delivery  ")
         nb.add(self.tab_prod, text="  📋  Productos  ")
         nb.add(self.tab_rep, text="  🧾  Ventas  ")
         nb.add(self.tab_stats, text="  📊  Estadísticas  ")
@@ -1218,6 +1640,7 @@ class App(tk.Tk):
         self.nb = nb
 
         self._armar_tab_mesas()
+        self._armar_tab_directas()
         self._armar_tab_productos()
         self._armar_tab_reportes()
         self._armar_tab_stats()
@@ -1337,12 +1760,14 @@ class App(tk.Tk):
         if idx == 0:
             self.refrescar_mesas()
         elif idx == 1:
-            self._cargar_productos()
+            self.refrescar_directas()
         elif idx == 2:
-            self._cargar_ventas()
+            self._cargar_productos()
         elif idx == 3:
-            self._redibujar_graficos()
+            self._cargar_ventas()
         elif idx == 4:
+            self._redibujar_graficos()
+        elif idx == 5:
             self._cargar_mesas_cfg()
 
     # ------------------------------------------------ stock bajo
@@ -1428,6 +1853,73 @@ class App(tk.Tk):
             return
         self._ventanas_mesa[numero] = MesaWindow(self, numero)
 
+    # ================================================= TAB MOSTRADOR/DELIVERY
+
+    def _armar_tab_directas(self):
+        f = self.tab_dir
+        f.columnconfigure(0, weight=1)
+        f.rowconfigure(3, weight=1)
+
+        ttk.Label(f, text="Mostrador y delivery — ventas sin mesa",
+                  style="Titulo.TLabel").grid(row=0, column=0, sticky="w",
+                                              pady=(0, 10))
+        botones = ttk.Frame(f, style="Panel.TFrame")
+        botones.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+        for canal, texto, color in [
+                ("mostrador", "🛍  NUEVA VENTA MOSTRADOR", COL_ACCENT),
+                ("delivery", "🛵  NUEVA VENTA DELIVERY", COL_ACCENT2)]:
+            tk.Button(botones, text=texto, bg=color, fg="white",
+                      font=(FONT, 12, "bold"), relief="flat", cursor="hand2",
+                      activebackground=COL_OCUPADA, activeforeground="white",
+                      padx=24, pady=14,
+                      command=lambda c=canal: VentaDirectaWindow(self, c))\
+                .pack(side="left", padx=(0, 12))
+
+        ttk.Label(f, text="Ventas de hoy por mostrador y delivery:",
+                  style="Panel.TLabel", font=(FONT, 10, "bold"))\
+            .grid(row=2, column=0, sticky="w", pady=(0, 4))
+        cols = ("hora", "canal", "cliente", "medio", "total")
+        self.tree_directas = ttk.Treeview(f, columns=cols, show="headings")
+        for col, txt, w, anchor in [("hora", "Hora", 70, "center"),
+                                    ("canal", "Canal", 100, "w"),
+                                    ("cliente", "Cliente / entrega", 340, "w"),
+                                    ("medio", "Medio de pago", 130, "w"),
+                                    ("total", "Total", 110, "e")]:
+            self.tree_directas.heading(col, text=txt)
+            self.tree_directas.column(col, width=w, anchor=anchor)
+        self.tree_directas.grid(row=3, column=0, sticky="nsew")
+
+        self.lbl_dir_resumen = ttk.Label(f, text="", style="Panel.TLabel",
+                                         font=(FONT, 11, "bold"))
+        self.lbl_dir_resumen.grid(row=4, column=0, sticky="w", pady=(8, 0))
+        self.refrescar_directas()
+
+    def refrescar_directas(self):
+        if not hasattr(self, "tree_directas"):
+            return  # la pestaña todavía no se armó
+        self.tree_directas.delete(*self.tree_directas.get_children())
+        hoy = datetime.date.today().isoformat()
+        con = db()
+        rows = con.execute(
+            "SELECT fecha, canal, cliente, medio, total FROM ventas "
+            "WHERE fecha LIKE ? AND canal IN ('mostrador','delivery') "
+            "ORDER BY fecha DESC", (hoy + "%",)).fetchall()
+        con.close()
+        resumen = {"mostrador": [0, 0.0], "delivery": [0, 0.0]}
+        for fecha, canal, cliente, medio, total in rows:
+            hora = fecha[11:16] if len(fecha) >= 16 else fecha
+            self.tree_directas.insert("", "end", values=(
+                hora, CANAL_NOMBRE.get(canal, canal), cliente or "-",
+                medio or "-", fmt(total)))
+            if canal in resumen:
+                resumen[canal][0] += 1
+                resumen[canal][1] += total
+        self.lbl_dir_resumen.config(text=(
+            f"Hoy —  Mostrador: {resumen['mostrador'][0]} venta(s), "
+            f"{fmt(resumen['mostrador'][1])}   |   "
+            f"Delivery: {resumen['delivery'][0]} venta(s), "
+            f"{fmt(resumen['delivery'][1])}"))
+
     # ================================================= TAB PRODUCTOS
 
     def _armar_tab_productos(self):
@@ -1439,15 +1931,17 @@ class App(tk.Tk):
         ttk.Label(f, text="Productos, precios y stock", style="Titulo.TLabel")\
             .grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
 
-        cols = ("categoria", "nombre", "precio", "stock")
+        cols = ("categoria", "nombre", "precio", "promo", "stock")
         self.tree_productos = ttk.Treeview(f, columns=cols, show="headings")
         for col, txt, w, anchor in [("categoria", "Categoría", 90, "w"),
-                                    ("nombre", "Producto", 250, "w"),
-                                    ("precio", "Precio", 100, "e"),
-                                    ("stock", "Stock", 110, "center")]:
+                                    ("nombre", "Producto", 220, "w"),
+                                    ("precio", "Precio", 90, "e"),
+                                    ("promo", "Promoción", 150, "w"),
+                                    ("stock", "Stock", 100, "center")]:
             self.tree_productos.heading(col, text=txt)
             self.tree_productos.column(col, width=w, anchor=anchor)
         self.tree_productos.tag_configure("bajo", foreground=COL_BAJO)
+        self.tree_productos.tag_configure("promo", foreground=COL_ACCENT2)
         self.tree_productos.grid(row=1, column=0, sticky="nsew", padx=(0, 10))
         self.tree_productos.bind("<<TreeviewSelect>>", self._producto_seleccionado)
 
@@ -1484,15 +1978,41 @@ class App(tk.Tk):
         ttk.Entry(form, textvariable=self.var_p_stockmin, width=8)\
             .grid(row=5, column=1, sticky="w", pady=4)
 
+        ttk.Separator(form, orient="horizontal")\
+            .grid(row=6, column=0, columnspan=2, sticky="ew", pady=(10, 6))
+        ttk.Label(form, text="Promoción (opcional)",
+                  foreground=COL_ACCENT2, font=(FONT, 10, "bold"))\
+            .grid(row=7, column=0, columnspan=2, sticky="w")
+        ttk.Label(form, text="Precio promo:").grid(row=8, column=0,
+                                                   sticky="w", pady=4)
+        self.var_p_promo = tk.StringVar()
+        ttk.Entry(form, textvariable=self.var_p_promo, width=10)\
+            .grid(row=8, column=1, sticky="w", pady=4)
+        ttk.Label(form, text="Desde (AAAA-MM-DD):").grid(row=9, column=0,
+                                                         sticky="w", pady=4)
+        self.var_p_pdesde = tk.StringVar()
+        ttk.Entry(form, textvariable=self.var_p_pdesde, width=12)\
+            .grid(row=9, column=1, sticky="w", pady=4)
+        ttk.Label(form, text="Hasta (AAAA-MM-DD):").grid(row=10, column=0,
+                                                         sticky="w", pady=4)
+        self.var_p_phasta = tk.StringVar()
+        ttk.Entry(form, textvariable=self.var_p_phasta, width=12)\
+            .grid(row=10, column=1, sticky="w", pady=4)
+        ttk.Label(form, foreground=COL_MUTED, wraplength=300, justify="left",
+                  text="Mientras la promo está vigente se cobra ese precio "
+                       "en las mesas y en la comandera. Fechas vacías = sin "
+                       "límite. Para sacarla, borrá el precio promo y guardá.")\
+            .grid(row=11, column=0, columnspan=2, sticky="w", pady=(2, 0))
+
         ttk.Button(form, text="➕  Agregar nuevo", style="Accent.TButton",
                    command=self._producto_agregar)\
-            .grid(row=6, column=0, columnspan=2, sticky="ew", pady=(12, 4))
+            .grid(row=12, column=0, columnspan=2, sticky="ew", pady=(12, 4))
         ttk.Button(form, text="💾  Guardar cambios del seleccionado",
                    command=self._producto_editar)\
-            .grid(row=7, column=0, columnspan=2, sticky="ew", pady=4)
+            .grid(row=13, column=0, columnspan=2, sticky="ew", pady=4)
         ttk.Button(form, text="🗑  Eliminar seleccionado",
                    command=self._producto_eliminar)\
-            .grid(row=8, column=0, columnspan=2, sticky="ew", pady=4)
+            .grid(row=14, column=0, columnspan=2, sticky="ew", pady=4)
 
         self.lbl_faltantes = ttk.Label(f, text="", style="Panel.TLabel",
                                        foreground=COL_BAJO)
@@ -1500,19 +2020,37 @@ class App(tk.Tk):
                                 sticky="w", pady=(8, 0))
         self._cargar_productos()
 
+    def _texto_promo(self, promo, desde, hasta):
+        """Cómo se muestra la promoción en la lista de productos."""
+        if not promo or promo <= 0:
+            return "—"
+        corta = lambda f: f"{f[8:10]}/{f[5:7]}" if len(f) >= 10 else f
+        if promo_vigente(promo, desde, hasta):
+            return fmt(promo) + (f" hasta {corta(hasta)}" if hasta else "")
+        hoy = datetime.date.today().isoformat()
+        if desde and desde > hoy:
+            return f"{fmt(promo)} desde {corta(desde)}"
+        return f"{fmt(promo)} (vencida)"
+
     def _cargar_productos(self):
         self.tree_productos.delete(*self.tree_productos.get_children())
         con = db()
-        for pid, nombre, precio, cat, usar, stock, smin in con.execute(
-                "SELECT id, nombre, precio, categoria, usar_stock, stock, "
-                "stock_min FROM productos ORDER BY categoria, nombre"):
+        for pid, nombre, precio, cat, usar, stock, smin, pp, pd, ph in \
+                con.execute(
+                    "SELECT id, nombre, precio, categoria, usar_stock, stock, "
+                    "stock_min, promo_precio, promo_desde, promo_hasta "
+                    "FROM productos ORDER BY categoria, nombre"):
             if usar:
                 stock_txt = f"{int(stock or 0)} (avisa ≤ {int(smin or 0)})"
                 tags = ("bajo",) if (stock or 0) <= (smin or 0) else ()
             else:
                 stock_txt, tags = "—", ()
-            self.tree_productos.insert("", "end", iid=str(pid), tags=tags,
-                                       values=(cat, nombre, fmt(precio), stock_txt))
+            if not tags and promo_vigente(pp, pd, ph):
+                tags = ("promo",)
+            self.tree_productos.insert(
+                "", "end", iid=str(pid), tags=tags,
+                values=(cat, nombre, fmt(precio),
+                        self._texto_promo(pp, pd, ph), stock_txt))
         con.close()
         faltan = self._faltantes()
         if faltan:
@@ -1529,7 +2067,8 @@ class App(tk.Tk):
             return
         con = db()
         row = con.execute(
-            "SELECT nombre, precio, categoria, usar_stock, stock, stock_min "
+            "SELECT nombre, precio, categoria, usar_stock, stock, stock_min, "
+            "promo_precio, promo_desde, promo_hasta "
             "FROM productos WHERE id=?", (int(sel[0]),)).fetchone()
         con.close()
         if row:
@@ -1539,6 +2078,9 @@ class App(tk.Tk):
             self.var_p_usar.set(bool(row[3]))
             self.var_p_stock.set(str(int(row[4] or 0)))
             self.var_p_stockmin.set(str(int(row[5] or 0)))
+            self.var_p_promo.set(f"{row[6]:g}" if row[6] else "")
+            self.var_p_pdesde.set(row[7] or "")
+            self.var_p_phasta.set(row[8] or "")
 
     def _leer_form_producto(self):
         nombre = self.var_p_nombre.get().strip()
@@ -1559,8 +2101,39 @@ class App(tk.Tk):
             messagebox.showerror("Producto", "Stock y mínimo deben ser números "
                                  "enteros.", parent=self)
             return None
+        promo_txt = self.var_p_promo.get().strip().replace(",", ".")
+        try:
+            promo = float(promo_txt) if promo_txt else 0.0
+            if promo < 0:
+                raise ValueError
+        except ValueError:
+            messagebox.showerror("Producto", "El precio de promoción no es "
+                                 "válido.", parent=self)
+            return None
+        if promo and promo >= precio:
+            messagebox.showerror(
+                "Producto", "El precio de promoción tiene que ser menor "
+                "al precio normal.", parent=self)
+            return None
+        desde = self.var_p_pdesde.get().strip()
+        hasta = self.var_p_phasta.get().strip()
+        for etiqueta, valor in (("desde", desde), ("hasta", hasta)):
+            if valor:
+                try:
+                    datetime.date.fromisoformat(valor)
+                except ValueError:
+                    messagebox.showerror(
+                        "Producto", f'La fecha "{etiqueta}" de la promoción '
+                        "no es válida (formato AAAA-MM-DD).", parent=self)
+                    return None
+        if desde and hasta and desde > hasta:
+            messagebox.showerror(
+                "Producto", 'En la promoción, "desde" no puede ser posterior '
+                'a "hasta".', parent=self)
+            return None
         return (nombre, precio, self.var_p_cat.get(),
-                1 if self.var_p_usar.get() else 0, stock, stock_min)
+                1 if self.var_p_usar.get() else 0, stock, stock_min,
+                promo, desde, hasta)
 
     def _producto_agregar(self):
         datos = self._leer_form_producto()
@@ -1568,11 +2141,15 @@ class App(tk.Tk):
             return
         con = db()
         con.execute("INSERT INTO productos(nombre, precio, categoria, "
-                    "usar_stock, stock, stock_min) VALUES (?,?,?,?,?,?)", datos)
+                    "usar_stock, stock, stock_min, promo_precio, promo_desde, "
+                    "promo_hasta) VALUES (?,?,?,?,?,?,?,?,?)", datos)
         con.commit()
         con.close()
         self.var_p_nombre.set("")
         self.var_p_precio.set("")
+        self.var_p_promo.set("")
+        self.var_p_pdesde.set("")
+        self.var_p_phasta.set("")
         self._cargar_productos()
 
     def _producto_editar(self):
@@ -1586,7 +2163,8 @@ class App(tk.Tk):
             return
         con = db()
         con.execute("UPDATE productos SET nombre=?, precio=?, categoria=?, "
-                    "usar_stock=?, stock=?, stock_min=? WHERE id=?",
+                    "usar_stock=?, stock=?, stock_min=?, promo_precio=?, "
+                    "promo_desde=?, promo_hasta=? WHERE id=?",
                     (*datos, int(sel[0])))
         con.commit()
         con.close()
@@ -1623,6 +2201,15 @@ class App(tk.Tk):
             value=datetime.date.today().isoformat())
         ttk.Entry(barra, textvariable=self.var_fecha, width=12)\
             .pack(side="left", padx=6)
+        ttk.Label(barra, text="Canal:", style="Panel.TLabel")\
+            .pack(side="left", padx=(10, 0))
+        self.var_canal_rep = tk.StringVar(value="Todos")
+        cb_canal = ttk.Combobox(barra, textvariable=self.var_canal_rep,
+                                state="readonly", width=11,
+                                values=["Todos", "Salón", "Mostrador",
+                                        "Delivery"])
+        cb_canal.pack(side="left", padx=6)
+        cb_canal.bind("<<ComboboxSelected>>", lambda e: self._cargar_ventas())
         ttk.Button(barra, text="Actualizar",
                    command=self._cargar_ventas).pack(side="left")
         ttk.Button(barra, text="Exportar CSV",
@@ -1631,14 +2218,15 @@ class App(tk.Tk):
                                      font=(FONT, 11, "bold"))
         self.lbl_resumen.pack(side="right")
 
-        cols = ("hora", "mesa", "mozo", "modo", "medio", "total")
+        cols = ("hora", "canal", "detalle", "mozo", "modo", "medio", "total")
         self.tree_ventas = ttk.Treeview(f, columns=cols, show="headings")
-        for col, txt, w, anchor in [("hora", "Hora", 80, "center"),
-                                    ("mesa", "Mesa", 55, "center"),
-                                    ("mozo", "Mozo/a", 140, "w"),
-                                    ("modo", "Tipo de cobro", 130, "w"),
-                                    ("medio", "Medio de pago", 130, "w"),
-                                    ("total", "Total", 110, "e")]:
+        for col, txt, w, anchor in [("hora", "Hora", 70, "center"),
+                                    ("canal", "Canal", 90, "w"),
+                                    ("detalle", "Mesa / cliente", 190, "w"),
+                                    ("mozo", "Mozo/a", 120, "w"),
+                                    ("modo", "Tipo de cobro", 120, "w"),
+                                    ("medio", "Medio de pago", 120, "w"),
+                                    ("total", "Total", 100, "e")]:
             self.tree_ventas.heading(col, text=txt)
             self.tree_ventas.column(col, width=w, anchor=anchor)
         self.tree_ventas.grid(row=2, column=0, sticky="nsew")
@@ -1650,10 +2238,16 @@ class App(tk.Tk):
 
     def _ventas_del_dia(self):
         fecha = self.var_fecha.get().strip()
+        filtro = {"Salón": "salon", "Mostrador": "mostrador",
+                  "Delivery": "delivery"}.get(self.var_canal_rep.get())
+        sql = ("SELECT fecha, mesa, mozo, modo, medio, total, canal, cliente "
+               "FROM ventas WHERE fecha LIKE ?")
+        params = [fecha + "%"]
+        if filtro:
+            sql += " AND canal=?"
+            params.append(filtro)
         con = db()
-        rows = con.execute(
-            "SELECT fecha, mesa, mozo, modo, medio, total FROM ventas "
-            "WHERE fecha LIKE ? ORDER BY fecha", (fecha + "%",)).fetchall()
+        rows = con.execute(sql + " ORDER BY fecha", params).fetchall()
         con.close()
         return rows
 
@@ -1662,27 +2256,38 @@ class App(tk.Tk):
         modos = {"una": "Una cuenta", "comensal": "Por comensal",
                  "iguales": "Partes iguales"}
         total_dia = 0.0
-        por_mozo, por_medio = {}, {}
+        por_mozo, por_medio, por_canal = {}, {}, {}
         rows = self._ventas_del_dia()
-        for fecha, mesa, mozo, modo, medio, total in rows:
+        for fecha, mesa, mozo, modo, medio, total, canal, cliente in rows:
             hora = fecha[11:16] if len(fecha) >= 16 else fecha
+            if canal == "salon" or mesa is not None:
+                detalle = f"Mesa {mesa}"
+            else:
+                detalle = cliente or "-"
             self.tree_ventas.insert("", "end", values=(
-                hora, mesa, mozo or "-", modos.get(modo, modo),
-                medio or "-", fmt(total)))
+                hora, CANAL_NOMBRE.get(canal, canal or "salon"), detalle,
+                mozo or "-", modos.get(modo, modo), medio or "-", fmt(total)))
             total_dia += total
-            por_mozo[mozo or "(sin mozo)"] = \
-                por_mozo.get(mozo or "(sin mozo)", 0) + total
+            if canal in (None, "", "salon"):
+                por_mozo[mozo or "(sin mozo)"] = \
+                    por_mozo.get(mozo or "(sin mozo)", 0) + total
             por_medio[medio or "-"] = por_medio.get(medio or "-", 0) + total
+            nombre_canal = CANAL_NOMBRE.get(canal, canal or "salon")
+            por_canal[nombre_canal] = por_canal.get(nombre_canal, 0) + total
         self.lbl_resumen.config(
-            text=f"{len(rows)} mesas cobradas — Total del día: {fmt(total_dia)}")
+            text=f"{len(rows)} ventas — Total del día: {fmt(total_dia)}")
         if rows:
-            linea1 = "Por mozo/a:   " + "   |   ".join(
+            lineas = ["Por canal:   " + "   |   ".join(
+                f"{c}: {fmt(t)}" for c, t in
+                sorted(por_canal.items(), key=lambda kv: -kv[1]))]
+            if por_mozo:
+                lineas.append("Por mozo/a (salón):   " + "   |   ".join(
+                    f"{m}: {fmt(t)}" for m, t in
+                    sorted(por_mozo.items(), key=lambda kv: -kv[1])))
+            lineas.append("Por medio de pago:   " + "   |   ".join(
                 f"{m}: {fmt(t)}" for m, t in
-                sorted(por_mozo.items(), key=lambda kv: -kv[1]))
-            linea2 = "Por medio de pago:   " + "   |   ".join(
-                f"{m}: {fmt(t)}" for m, t in
-                sorted(por_medio.items(), key=lambda kv: -kv[1]))
-            self.lbl_por_mozo.config(text=linea1 + "\n" + linea2)
+                sorted(por_medio.items(), key=lambda kv: -kv[1])))
+            self.lbl_por_mozo.config(text="\n".join(lineas))
         else:
             self.lbl_por_mozo.config(text="Sin ventas registradas para ese día.")
 
@@ -1700,7 +2305,8 @@ class App(tk.Tk):
             return
         with open(ruta, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
-            w.writerow(["fecha", "mesa", "mozo", "modo", "medio", "total"])
+            w.writerow(["fecha", "mesa", "mozo", "modo", "medio", "total",
+                        "canal", "cliente"])
             w.writerows(rows)
         messagebox.showinfo("Exportar", f"Exportado a:\n{ruta}", parent=self)
 

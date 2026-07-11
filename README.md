@@ -36,14 +36,23 @@ Los datos se guardan en `~/.restaurante_armenio/`:
 - **Cobro**: una sola cuenta, por comensal (lo compartido se divide
   proporcionalmente, un recibo por persona) o partes iguales. Se registra el
   **medio de pago**: Efectivo, MercadoPago o Transferencia.
+- **Mostrador y delivery**: ventas sin mesa desde su propia pestaña.
+  El delivery guarda cliente, teléfono y dirección (salen en el ticket y en
+  la comanda de cocina). Cada canal queda registrado por separado.
 - **Productos**: la carta completa de El Horno de Leo ya está cargada
   (entradas, lehemeyuns, shawarmas, milanesas, pizzetas, bebidas, cervezas,
   vino y postres) con las categorías Entrada / Menú / Bebida / Postre.
   Alta, edición y baja de productos.
+- **Promociones por tiempo limitado**: a cualquier producto se le puede poner
+  un precio de promoción con fecha desde/hasta; mientras está vigente se
+  cobra ese precio en las mesas, en mostrador/delivery y en la comandera
+  (los mozos lo ven con la insignia PROMO y el precio anterior tachado).
+  Al vencer, vuelve solo al precio normal.
 - **Control de stock** (opcional por producto): se descuenta al pedir, se
   devuelve si se quita el ítem, bloquea la venta sin stock y avisa al abrir el
   programa qué hay que reponer.
-- **Ventas**: reporte por día con desglose por mozo/a y por medio de pago,
+- **Ventas**: reporte por día con filtro por canal (salón / mostrador /
+  delivery) y desglose por canal, por mozo/a y por medio de pago,
   exportación a CSV.
 - **Estadísticas**: facturación por día y ranking de productos más vendidos
   (hoy / últimos 7 días / últimos 30 días).

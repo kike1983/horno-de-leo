@@ -87,9 +87,11 @@ def _estado():
     totales = dict(con.execute(
         "SELECT mesa, SUM(precio*cantidad) FROM pedidos GROUP BY mesa"))
     productos = con.execute(
-        "SELECT id, nombre, precio, categoria, usar_stock, stock "
+        "SELECT id, nombre, precio, categoria, usar_stock, stock, "
+        "promo_precio, promo_desde, promo_hasta "
         "FROM productos ORDER BY categoria, nombre").fetchall()
     con.close()
+    pv = _d["precio_vigente"]
     return {
         "nombre": _d["cfg_get"]("nombre", "El Horno de Leo"),
         "categorias": _d["categorias"],
@@ -97,11 +99,15 @@ def _estado():
                    "abierta": bool(a), "total": totales.get(n, 0) or 0,
                    "cuenta": bool(pc)}
                   for n, mz, c, a, pc in mesas],
-        "productos": [{"id": pid, "nombre": nom, "precio": pre,
+        "productos": [{"id": pid, "nombre": nom,
+                       "precio": pv(pre, pp, pd, ph),
+                       # precio normal, solo si hay promo activa (se tacha)
+                       "antes": pre if pv(pre, pp, pd, ph) != pre else None,
                        "categoria": cat,
                        "agotado": bool(usar) and (stk or 0) <= 0,
                        "quedan": int(stk or 0) if usar else None}
-                      for pid, nom, pre, cat, usar, stk in productos],
+                      for pid, nom, pre, cat, usar, stk, pp, pd, ph
+                      in productos],
     }
 
 
@@ -159,13 +165,15 @@ def _recibir_pedido(datos):
         faltas, filas = [], []
         for pid, cant, comensal in pedido:
             prod = con.execute(
-                "SELECT nombre, precio, usar_stock, stock FROM productos "
+                "SELECT nombre, precio, usar_stock, stock, promo_precio, "
+                "promo_desde, promo_hasta FROM productos "
                 "WHERE id=?", (pid,)).fetchone()
             if not prod:
                 con.rollback()
                 return 400, {"error": "Hay un producto que ya no existe; "
                                       "actualizá la carta en el celular."}
-            nombre, precio, usar_stock, stock = prod
+            nombre, precio, usar_stock, stock, pp, pdesde, phasta = prod
+            precio = _d["precio_vigente"](precio, pp, pdesde, phasta)
             if usar_stock and (stock or 0) < cant:
                 faltas.append(f"{nombre} (quedan {int(stock or 0)})")
             filas.append((pid, nombre, precio, cant, comensal, usar_stock))
@@ -436,6 +444,10 @@ PAGINA = """<!doctype html>
   .prod .nom{flex:1}
   .prod .aviso{display:block; color:var(--rojo); font-size:.75rem}
   .prod .precio{font-weight:700; color:var(--bordo)}
+  .prod .antes{color:var(--suave); font-size:.78rem;
+               text-decoration:line-through}
+  .prod .promo{background:var(--naranja); color:#fff; border-radius:6px;
+               font-size:.68rem; font-weight:700; padding:2px 6px}
   .prod .mas{background:var(--naranja); color:#fff; border-radius:8px;
              padding:4px 10px; font-weight:700}
   .prod.agotado{opacity:.45}
@@ -738,6 +750,10 @@ function renderProductos() {
     b.appendChild(nom);
     const n = enCarrito(p.id);
     if (n) b.appendChild(el("span", "cuantos", "×" + n));
+    if (p.antes) {
+      b.appendChild(el("span", "promo", "PROMO"));
+      b.appendChild(el("span", "antes", fmt(p.antes)));
+    }
     b.appendChild(el("span", "precio", fmt(p.precio)));
     b.appendChild(el("span", "mas", "+"));
     if (!p.agotado) b.onclick = () => agregar(p);

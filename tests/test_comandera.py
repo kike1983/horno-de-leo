@@ -174,6 +174,30 @@ assert POST("/api/pedido", {"mesa": 1, "mozo": "Caro", "items": [
 assert GET("/api/estado")["mesas"][0]["abierta"] is False
 print("OK rechazos: mesa inexistente, sin ítems, producto inexistente")
 
+# --- v1.5: promociones también en la comandera
+import datetime as _dt
+ayer = (_dt.date.today() - _dt.timedelta(days=1)).isoformat()
+manana = (_dt.date.today() + _dt.timedelta(days=1)).isoformat()
+con = r.db()
+con.execute("UPDATE productos SET promo_precio=350, promo_desde=?, "
+            "promo_hasta=? WHERE id=?", (ayer, manana, pid_sh))
+con.commit(); con.close()
+prod = next(p for p in GET("/api/estado")["productos"] if p["id"] == pid_sh)
+assert prod["precio"] == 350 and prod["antes"] == 490, prod
+code, resp = POST("/api/pedido", {"mesa": 5, "mozo": "Caro", "items": [
+    {"id": pid_sh, "cantidad": 1, "comensal": 0}]})
+assert code == 200, (code, resp)
+con = r.db()
+precio_pedido = con.execute(
+    "SELECT precio FROM pedidos WHERE mesa=5").fetchone()[0]
+# promo vencida: se vuelve al precio normal al instante
+con.execute("UPDATE productos SET promo_hasta=? WHERE id=?", (ayer, pid_sh))
+con.commit(); con.close()
+assert precio_pedido == 350
+prod = next(p for p in GET("/api/estado")["productos"] if p["id"] == pid_sh)
+assert prod["precio"] == 490 and prod["antes"] is None, prod
+print("OK promociones en la comandera: precio promo vigente y tachado")
+
 # --- IP fija en Windows: máscara y contenido de los .bat
 assert r.mascara_desde_prefijo(24) == "255.255.255.0"
 assert r.mascara_desde_prefijo(25) == "255.255.255.128"

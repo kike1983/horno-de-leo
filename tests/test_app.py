@@ -119,8 +119,8 @@ assert data.startswith(b"\x1b\x40\x1b\x74\x02") and data.endswith(b"\x1d\x56\x42
 assert "Prueba".encode() in data
 print("OK generación ESC/POS (init + CP850 + corte)")
 
-# --- estadísticas: datos y dibujo
-app.nb.select(3)
+# --- estadísticas: datos y dibujo (tab 4 desde que existe Mostrador/Delivery)
+app.nb.select(4)
 app.update_idletasks(); app.update()
 app._redibujar_graficos()
 app.update()
@@ -185,6 +185,162 @@ assert con.execute("SELECT COUNT(*) FROM ventas").fetchone()[0] == ventas_antes
 con.close()
 assert not win2.winfo_exists()
 print("OK cancelar mesa: liberada sin venta y con stock devuelto")
+
+# ================================================= v1.5: promociones
+
+hoy = datetime.date.today()
+ayer = (hoy - datetime.timedelta(days=1)).isoformat()
+manana = (hoy + datetime.timedelta(days=1)).isoformat()
+
+assert r.promo_vigente(100, "", "") is True
+assert r.promo_vigente(100, ayer, manana) is True
+assert r.promo_vigente(100, manana, "") is False        # todavía no empezó
+assert r.promo_vigente(100, "", ayer) is False          # ya venció
+assert r.promo_vigente(0, ayer, manana) is False        # sin precio promo
+assert r.precio_vigente(490, 350, ayer, manana) == 350
+assert r.precio_vigente(490, 350, "", ayer) == 490
+print("OK helpers de promoción (vigencia por fechas)")
+
+# promo activa en Shawarma de Pollo: la mesa tiene que cobrar 350
+con = r.db()
+con.execute("UPDATE productos SET promo_precio=350, promo_desde=?, "
+            "promo_hasta=? WHERE nombre='Shawarma de Pollo'", (ayer, manana))
+# promo vencida en Baklava: se sigue cobrando el precio normal
+con.execute("UPDATE productos SET promo_precio=50, promo_desde='', "
+            "promo_hasta=? WHERE nombre='Baklava'", (ayer,))
+con.commit(); con.close()
+
+win3 = r.MesaWindow(app, 2)
+win3.var_mozo.set("Leo")
+for nombre_prod in ("Shawarma de Pollo", "Baklava"):
+    for iid in win3.tree_prod.get_children():
+        if nombre_prod in win3.tree_prod.item(iid, "text"):
+            win3.tree_prod.selection_set(iid)
+            break
+    win3.var_cant.set(1)
+    win3._agregar()
+con = r.db()
+precios = dict(con.execute(
+    "SELECT nombre, precio FROM pedidos WHERE mesa=2").fetchall())
+con.close()
+assert precios["Shawarma de Pollo"] == 350, precios
+assert precios["Baklava"] == 190, precios
+# en la lista, el producto en promo se marca
+marcados = [win3.tree_prod.item(i, "text") for i in win3.tree_prod.get_children()
+            if "PROMO" in win3.tree_prod.item(i, "text")]
+assert any("Shawarma de Pollo" in t for t in marcados), marcados
+assert not any("Baklava" in t for t in marcados), marcados
+win3._cancelar_mesa()
+print("OK promo: vigente cobra el precio promocional, vencida el normal")
+
+# validación del formulario: promo mayor al precio se rechaza
+app.var_p_nombre.set("Prueba")
+app.var_p_precio.set("100")
+app.var_p_stock.set("0"); app.var_p_stockmin.set("0")
+app.var_p_promo.set("150")
+app.var_p_pdesde.set(""); app.var_p_phasta.set("")
+errores.clear()
+assert app._leer_form_producto() is None and errores
+app.var_p_promo.set("80")
+app.var_p_phasta.set("31/12/2026")   # formato inválido
+errores.clear()
+assert app._leer_form_producto() is None and errores
+app.var_p_phasta.set(manana)
+datos = app._leer_form_producto()
+assert datos and datos[6] == 80 and datos[8] == manana, datos
+print("OK validación del formulario de promoción")
+
+# ================================================= v1.5: mostrador y delivery
+
+con = r.db()
+con.execute("UPDATE productos SET usar_stock=1, stock=4 WHERE nombre='Baklava'")
+ventas_antes = con.execute("SELECT COUNT(*) FROM ventas").fetchone()[0]
+con.commit(); con.close()
+
+vd = r.VentaDirectaWindow(app, "mostrador")
+vd.var_cliente.set("Anush")
+for iid in vd.tree_prod.get_children():
+    if "Baklava" in vd.tree_prod.item(iid, "text"):
+        vd.tree_prod.selection_set(iid)
+        break
+vd.var_cant.set(2)
+vd._agregar()
+# el stock no se toca hasta cobrar
+con = r.db()
+assert con.execute("SELECT stock FROM productos WHERE nombre='Baklava'")\
+    .fetchone()[0] == 4
+con.close()
+# pero la ventana descuenta lo ya cargado: pedir 3 más debe fallar (quedan 2)
+errores.clear()
+vd.var_cant.set(3)
+for iid in vd.tree_prod.get_children():
+    if "Baklava" in vd.tree_prod.item(iid, "text"):
+        vd.tree_prod.selection_set(iid)
+        break
+vd._agregar()
+assert errores and "stock" in errores[0].lower(), errores
+assert vd._total() == 380, vd._total()
+
+dlg = r.tk.Toplevel(vd)
+vd._confirmar_cobro(dlg, imprimir=False, medio="Efectivo")
+con = r.db()
+venta = con.execute(
+    "SELECT mesa, total, canal, cliente, medio FROM ventas "
+    "WHERE canal='mostrador'").fetchone()
+assert venta == (None, 380.0, "mostrador", "Anush", "Efectivo"), venta
+assert con.execute("SELECT stock FROM productos WHERE nombre='Baklava'")\
+    .fetchone()[0] == 2
+con.close()
+assert not vd.winfo_exists()
+print("OK venta mostrador: registrada con canal propio y stock descontado")
+
+vd2 = r.VentaDirectaWindow(app, "delivery")
+vd2.var_cliente.set("Karen")
+vd2.var_tel.set("099123456")
+vd2.var_dir.set("Av. Italia 1234")
+for iid in vd2.tree_prod.get_children():
+    if "Shawarma de Pollo" in vd2.tree_prod.item(iid, "text"):
+        vd2.tree_prod.selection_set(iid)
+        break
+vd2.var_cant.set(1)
+vd2._agregar()
+assert vd2._total() == 350  # promo vigente también en delivery
+dlg = r.tk.Toplevel(vd2)
+vd2._confirmar_cobro(dlg, imprimir=False, medio="MercadoPago")
+con = r.db()
+venta = con.execute("SELECT total, canal, cliente FROM ventas "
+                    "WHERE canal='delivery'").fetchone()
+assert venta == (350.0, "delivery", "Karen · 099123456 · Av. Italia 1234"), venta
+con.close()
+# el ticket guarda los datos de entrega
+recibo_dv = sorted(f for f in os.listdir(r.RECIBOS_DIR)
+                   if f.startswith("recibo_delivery"))[-1]
+texto = open(os.path.join(r.RECIBOS_DIR, recibo_dv), encoding="utf-8").read()
+assert "DELIVERY" in texto and "Av. Italia 1234" in texto \
+    and "099123456" in texto, texto
+print("OK venta delivery: cliente/tel/dirección en el registro y el ticket")
+
+# la pestaña Mostrador/Delivery lista las ventas de hoy
+app.refrescar_directas()
+assert len(app.tree_directas.get_children()) == 2
+assert "Mostrador: 1" in app.lbl_dir_resumen.cget("text")
+assert "Delivery: 1" in app.lbl_dir_resumen.cget("text")
+print("OK pestaña Mostrador/Delivery:", app.lbl_dir_resumen.cget("text"))
+
+# reporte con filtro por canal
+app.var_fecha.set(datetime.date.today().isoformat())
+app.var_canal_rep.set("Todos")
+app._cargar_ventas()
+assert "Por canal:" in app.lbl_por_mozo.cget("text")
+todas = len(app.tree_ventas.get_children())
+app.var_canal_rep.set("Delivery")
+app._cargar_ventas()
+solo_delivery = app.tree_ventas.get_children()
+assert len(solo_delivery) == 1 and todas > 1
+fila = app.tree_ventas.item(solo_delivery[0], "values")
+assert fila[1] == "Delivery" and "Karen" in fila[2], fila
+app.var_canal_rep.set("Todos")
+print("OK reporte de ventas con filtro por canal")
 
 app.destroy()
 print("\nTODAS LAS PRUEBAS PASARON")
