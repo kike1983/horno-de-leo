@@ -1,5 +1,5 @@
 {
-  "version": "1.8",
+  "version": "1.9",
   "archivos": ["restaurante.py", "comandera.py", "icono.png", "icono.ico"],
-  "novedades": "Letra más grande en el programa y en el ticket de la térmica (doble alto, se puede apagar en Configuración → Impresora); scroll con la rueda del mouse en Configuración, mesas y ficha de producto; la dirección de actualizaciones ya no se puede modificar por accidente."
+  "novedades": "La carta se separa en Armenios / Minutas / Pizzería (antes todo junto en Menú). Las pizzetas abren la selección de gustos (aceitunas, tomate, panceta, roquefort, albahaca, cheddar, rúcula) en la comandera y en la PC: los gustos salen en la comanda de cocina y los que exceden lo incluido se cobran solos como Gusto Extra."
 }

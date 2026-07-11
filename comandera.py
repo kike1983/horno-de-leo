@@ -92,9 +92,13 @@ def _estado():
         "FROM productos ORDER BY categoria, nombre").fetchall()
     con.close()
     pv = _d["precio_vigente"]
+    lleva = _d["lleva_gustos"]
+    incluidos = _d["gustos_incluidos"]
     return {
         "nombre": _d["cfg_get"]("nombre", "El Horno de Leo"),
         "categorias": _d["categorias"],
+        "gustos_pizza": _d["gustos_pizza"],
+        "gusto_extra": _d["precio_gusto_extra"](),
         "mesas": [{"numero": n, "mozo": mz or "", "comensales": c or 0,
                    "abierta": bool(a), "total": totales.get(n, 0) or 0,
                    "cuenta": bool(pc)}
@@ -104,6 +108,8 @@ def _estado():
                        # precio normal, solo si hay promo activa (se tacha)
                        "antes": pre if pv(pre, pp, pd, ph) != pre else None,
                        "categoria": cat,
+                       "gustos": lleva(nom, cat),
+                       "incluidos": incluidos(nom),
                        "agotado": bool(usar) and (stk or 0) <= 0,
                        "quedan": int(stk or 0) if usar else None}
                       for pid, nom, pre, cat, usar, stk, pp, pd, ph
@@ -144,8 +150,11 @@ def _recibir_pedido(datos):
             pid = int(it["id"])
             cant = int(it["cantidad"])
             comensal = int(it.get("comensal", 0))
+            gustos = it.get("gustos") or []
             assert 1 <= cant <= 99 and 0 <= comensal <= 30
-            pedido.append((pid, cant, comensal))
+            assert isinstance(gustos, list) and len(gustos) <= 10
+            assert all(g in _d["gustos_pizza"] for g in gustos)
+            pedido.append((pid, cant, comensal, gustos))
     except (KeyError, ValueError, TypeError, AssertionError):
         return 400, {"error": "Pedido mal formado."}
 
@@ -163,17 +172,22 @@ def _recibir_pedido(datos):
             return 400, {"error": "Falta el nombre del mozo/a."}
 
         faltas, filas = [], []
-        for pid, cant, comensal in pedido:
+        for pid, cant, comensal, gustos in pedido:
             prod = con.execute(
-                "SELECT nombre, precio, usar_stock, stock, promo_precio, "
-                "promo_desde, promo_hasta FROM productos "
+                "SELECT nombre, precio, categoria, usar_stock, stock, "
+                "promo_precio, promo_desde, promo_hasta FROM productos "
                 "WHERE id=?", (pid,)).fetchone()
             if not prod:
                 con.rollback()
                 return 400, {"error": "Hay un producto que ya no existe; "
                                       "actualizá la carta en el celular."}
-            nombre, precio, usar_stock, stock, pp, pdesde, phasta = prod
+            nombre, precio, cat, usar_stock, stock, pp, pdesde, phasta = prod
             precio = _d["precio_vigente"](precio, pp, pdesde, phasta)
+            if gustos and _d["lleva_gustos"](nombre, cat):
+                # los gustos que exceden lo incluido se cobran como extra
+                de_mas = max(0, len(gustos) - _d["gustos_incluidos"](nombre))
+                precio += de_mas * _d["precio_gusto_extra"]()
+                nombre += " (" + ", ".join(gustos) + ")"
             if usar_stock and (stock or 0) < cant:
                 faltas.append(f"{nombre} (quedan {int(stock or 0)})")
             filas.append((pid, nombre, precio, cant, comensal, usar_stock))
@@ -193,7 +207,7 @@ def _recibir_pedido(datos):
         actual = con.execute(
             "SELECT comensales FROM mesas WHERE numero=?", (mesa,)).fetchone()
         comensales_final = max(actual[0] or 0, comensales,
-                               max(c for _, _, c in pedido))
+                               max(c for _, _, c, _ in pedido))
         if mozo_actual:
             # la mesa ya tiene mozo: otro puede agregar ítems, pero la
             # mesa sigue siendo de quien la abrió
@@ -477,6 +491,23 @@ PAGINA = """<!doctype html>
              border-radius:10px; padding:12px; font-size:1rem;
              font-weight:700; font-family:inherit}
   #btnEnviar:disabled{opacity:.6}
+  /* --- panel de gustos (pizzetas) --- */
+  #velo{position:fixed; inset:0; background:rgba(0,0,0,.45); display:none;
+        z-index:40; align-items:flex-end; justify-content:center}
+  #velo .modal{background:var(--panel); border-radius:16px 16px 0 0;
+               padding:16px 16px calc(16px + env(safe-area-inset-bottom));
+               width:100%; max-width:480px; max-height:80vh; overflow-y:auto}
+  #gTitulo{color:var(--bordo); font-size:1.05rem; margin-bottom:2px}
+  #gNota{color:var(--suave); font-size:.85rem; margin-bottom:6px}
+  .gusto{display:flex; align-items:center; gap:12px; padding:11px 4px;
+         border-bottom:1px dashed var(--borde); font-size:1rem}
+  .gusto:last-child{border-bottom:0}
+  .gusto input{width:22px; height:22px; margin:0; accent-color:var(--bordo)}
+  #gBotones{display:flex; gap:8px; margin-top:12px}
+  #gBotones button{flex:1; padding:13px; border-radius:10px; border:0;
+                   font-weight:700; font-family:inherit; font-size:1rem}
+  #gCancelar{background:var(--crema); color:var(--texto)}
+  #gAgregar{background:var(--bordo); color:#fff}
   /* --- toast --- */
   #toast{position:fixed; top:64px; left:50%; transform:translateX(-50%);
          background:var(--verde); color:#fff; padding:10px 22px;
@@ -536,6 +567,17 @@ PAGINA = """<!doctype html>
   <div id="filaEnviar">
     <button id="btnCarrito"></button>
     <button id="btnEnviar">ENVIAR PEDIDO</button>
+  </div>
+</div>
+<div id="velo">
+  <div class="modal">
+    <h3 id="gTitulo"></h3>
+    <div id="gNota"></div>
+    <div id="gLista"></div>
+    <div id="gBotones">
+      <button id="gCancelar">Cancelar</button>
+      <button id="gAgregar">AGREGAR</button>
+    </div>
   </div>
 </div>
 <div id="toast"></div>
@@ -765,14 +807,59 @@ function renderProductos() {
 /* ---------------- carrito ---------------- */
 
 function agregar(p) {
+  if (p.gustos) { abrirGustos(p); return; }  // pizzetas: elegir gustos
+  alCarrito(p, []);
+}
+
+function alCarrito(p, gustos) {
+  const clave = gustos.join(",");
   const existente = carrito.find(
-    i => i.id === p.id && i.comensal === paraQuien);
+    i => i.id === p.id && i.comensal === paraQuien &&
+         (i.gustos || []).join(",") === clave);
   if (existente) existente.cantidad = Math.min(existente.cantidad + 1, 99);
-  else carrito.push({id: p.id, nombre: p.nombre, precio: p.precio,
-                     cantidad: 1, comensal: paraQuien});
+  else {
+    const extras = Math.max(0, gustos.length - (p.incluidos || 0));
+    carrito.push({
+      id: p.id,
+      nombre: p.nombre + (gustos.length ? " (" + gustos.join(", ") + ")" : ""),
+      precio: p.precio + extras * (estado.gusto_extra || 0),
+      cantidad: 1, comensal: paraQuien, gustos: gustos});
+  }
   renderProductos();
   renderBarra();
 }
+
+/* ---------------- gustos de pizzetas ---------------- */
+
+let gustoProd = null;
+
+function abrirGustos(p) {
+  gustoProd = p;
+  $("gTitulo").textContent = p.nombre;
+  $("gNota").textContent =
+    (p.incluidos ? "Incluye " + p.incluidos + " gusto. " : "") +
+    "Cada gusto extra suma " + fmt(estado.gusto_extra || 0) + ".";
+  const caja = $("gLista");
+  caja.replaceChildren();
+  for (const g of estado.gustos_pizza || []) {
+    const fila = el("label", "gusto");
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.value = g;
+    fila.appendChild(cb);
+    fila.appendChild(el("span", "", g));
+    caja.appendChild(fila);
+  }
+  $("velo").style.display = "flex";
+}
+
+$("gCancelar").onclick = () => { $("velo").style.display = "none"; };
+$("gAgregar").onclick = () => {
+  const gustos = [...$("gLista").querySelectorAll("input:checked")]
+    .map(c => c.value);
+  $("velo").style.display = "none";
+  if (gustoProd) alCarrito(gustoProd, gustos);
+};
 
 function renderBarra() {
   const barra = $("barra");
@@ -833,7 +920,8 @@ async function enviar() {
       mozo: mozo,
       comensales: parseInt($("inCom").value) || 1,
       items: carrito.map(i => ({id: i.id, cantidad: i.cantidad,
-                                comensal: i.comensal}))
+                                comensal: i.comensal,
+                                gustos: i.gustos || []}))
     });
     carrito = [];
     toast("Pedido enviado ✔");

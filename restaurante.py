@@ -36,7 +36,7 @@ import comandera  # servidor web para que los mozos pidan desde el celular
 
 # ---------------------------------------------------------------- rutas / constantes
 
-VERSION = "1.8"
+VERSION = "1.9"
 
 APP_DIR = os.path.join(os.path.expanduser("~"), ".restaurante_armenio")
 DB_PATH = os.path.join(APP_DIR, "restaurante.db")
@@ -44,7 +44,7 @@ RECIBOS_DIR = os.path.join(APP_DIR, "recibos")
 BACKUPS_DIR = os.path.join(APP_DIR, "backups")
 BACKUPS_A_CONSERVAR = 30
 
-CATEGORIAS = ["Entrada", "Menú", "Bebida", "Postre"]
+CATEGORIAS = ["Entrada", "Armenios", "Minutas", "Pizzería", "Bebida", "Postre"]
 MEDIOS_PAGO = ["Efectivo", "MercadoPago", "Transferencia"]
 ANCHO_TICKET = 42  # caracteres de ancho del recibo
 
@@ -121,34 +121,33 @@ CARTA_HORNO_DE_LEO = [
     ("Pan Lavash", 120, "Entrada"),
     ("Hummus de Garbanzo", 280, "Entrada"),
     ("Salsa de Yogurt", 280, "Entrada"),
-    # Comida armenia
-    ("Lehemeyun Clásico", 125, "Menú"),
-    ("Lehemeyun Especial", 155, "Menú"),
-    ("Lehemeyun con Muzza", 155, "Menú"),
-    ("Shawarma Clásico", 460, "Menú"),
-    ("Shawarma de Pollo", 490, "Menú"),
-    ("Shawarma Vegetariano", 460, "Menú"),
-    ("Shawarma Vegano", 460, "Menú"),
-    ("Shawarma de Falafel", 460, "Menú"),
-    ("Shawarma Clásico + Fritas", 590, "Menú"),
-    ("Shawarma de Pollo + Fritas", 630, "Menú"),
-    # Especialidades
-    ("Falafel con Guarnición", 480, "Menú"),
-    ("Borek de Queso con Guarnición", 430, "Menú"),
-    # Individual
-    ("Milanesa de Carne c/Guarnición", 520, "Menú"),
-    ("Milanesa Armenia c/Guarnición", 650, "Menú"),
-    ("Milanesa al Pan c/Fritas", 650, "Menú"),
-    ("Papas Fritas", 220, "Menú"),
-    ("Papas Fritas c/Cheddar", 350, "Menú"),
-    ("Papas Rústicas", 260, "Menú"),
-    ("Nuggets c/Fritas", 390, "Menú"),
-    ("Bastones de Muzarella", 390, "Menú"),
-    # Pizzetas
-    ("Pizzeta c/Muzza", 450, "Menú"),
-    ("Pizzeta 1 Gusto", 500, "Menú"),
-    ("Tere c/Muzza", 550, "Menú"),
-    ("Gusto Extra (pizzeta)", 90, "Menú"),
+    # Platos armenios
+    ("Lehemeyun Clásico", 125, "Armenios"),
+    ("Lehemeyun Especial", 155, "Armenios"),
+    ("Lehemeyun con Muzza", 155, "Armenios"),
+    ("Shawarma Clásico", 460, "Armenios"),
+    ("Shawarma de Pollo", 490, "Armenios"),
+    ("Shawarma Vegetariano", 460, "Armenios"),
+    ("Shawarma Vegano", 460, "Armenios"),
+    ("Shawarma de Falafel", 460, "Armenios"),
+    ("Shawarma Clásico + Fritas", 590, "Armenios"),
+    ("Shawarma de Pollo + Fritas", 630, "Armenios"),
+    ("Falafel con Guarnición", 480, "Armenios"),
+    ("Borek de Queso con Guarnición", 430, "Armenios"),
+    # Minutas
+    ("Milanesa de Carne c/Guarnición", 520, "Minutas"),
+    ("Milanesa Armenia c/Guarnición", 650, "Minutas"),
+    ("Milanesa al Pan c/Fritas", 650, "Minutas"),
+    ("Papas Fritas", 220, "Minutas"),
+    ("Papas Fritas c/Cheddar", 350, "Minutas"),
+    ("Papas Rústicas", 260, "Minutas"),
+    ("Nuggets c/Fritas", 390, "Minutas"),
+    ("Bastones de Muzarella", 390, "Minutas"),
+    # Pizzería
+    ("Pizzeta c/Muzza", 450, "Pizzería"),
+    ("Pizzeta 1 Gusto", 500, "Pizzería"),
+    ("Tere c/Muzza", 550, "Pizzería"),
+    ("Gusto Extra (pizzeta)", 90, "Pizzería"),
     # Bebidas
     ("Refresco 600 ml", 160, "Bebida"),
     ("Refresco 1.5 L", 280, "Bebida"),
@@ -248,7 +247,20 @@ def init_db():
     _agregar_columna(cur, "productos", "promo_hasta", "TEXT DEFAULT ''")
     _agregar_columna(cur, "ventas", "canal", "TEXT DEFAULT 'salon'")
     _agregar_columna(cur, "ventas", "cliente", "TEXT DEFAULT ''")
+    # v1.9: la vieja categoría "Menú" se separa en Armenios/Minutas/Pizzería
+    for categoria, patrones in [
+            ("Pizzería", ("Pizzeta%", "Tere %", "Gusto Extra%")),
+            ("Armenios", ("Lehemeyun%", "Shawarma%", "Falafel%", "Borek%")),
+            ("Minutas", ("Milanesa%", "Papas%", "Nuggets%", "Bastones%"))]:
+        for patron in patrones:
+            cur.execute("UPDATE productos SET categoria=? "
+                        "WHERE categoria='Menú' AND nombre LIKE ?",
+                        (categoria, patron))
+    # lo que quede en "Menú" (productos agregados a mano) pasa a Minutas
+    cur.execute("UPDATE productos SET categoria='Minutas' "
+                "WHERE categoria='Menú'")
     # WAL: la interfaz y la comandera pueden leer/escribir a la vez
+    con.commit()  # cerrar la transacción de las migraciones (WAL lo exige)
     cur.execute("PRAGMA journal_mode = WAL")
 
     if cur.execute("SELECT COUNT(*) FROM productos").fetchone()[0] == 0:
@@ -289,6 +301,45 @@ def cfg_set(clave, valor):
                 (clave, valor))
     con.commit()
     con.close()
+
+
+# ---------------------------------------------------------------- pizzería (gustos)
+# Las pizzetas llevan selección de gustos. "Pizzeta 1 Gusto" incluye uno;
+# cada gusto que exceda lo incluido se cobra como "Gusto Extra (pizzeta)".
+# Los gustos elegidos quedan en el nombre del ítem (los ve la cocina).
+
+GUSTOS_PIZZA = ["Aceitunas", "Tomate", "Panceta", "Roquefort",
+                "Albahaca", "Cheddar", "Rúcula"]
+
+
+def lleva_gustos(nombre, categoria):
+    """True si el producto abre la selección de gustos (pizzetas y teres;
+    no el "Gusto Extra", que es el adicional que se cobra)."""
+    return categoria == "Pizzería" and not nombre.startswith("Gusto Extra")
+
+
+def gustos_incluidos(nombre):
+    """Cuántos gustos incluye el precio base ("Pizzeta 1 Gusto" -> 1)."""
+    return 1 if "1 gusto" in nombre.lower() else 0
+
+
+def precio_gusto_extra():
+    con = db()
+    row = con.execute("SELECT precio FROM productos WHERE nombre LIKE "
+                      "'Gusto Extra%' ORDER BY id LIMIT 1").fetchone()
+    con.close()
+    return row[0] if row else 0
+
+
+def aplicar_gustos(nombre, precio, gustos):
+    """Devuelve (nombre_final, precio_final) con los gustos marcados."""
+    gustos = [g for g in gustos if g in GUSTOS_PIZZA]
+    if not gustos:
+        return nombre, precio
+    extras = max(0, len(gustos) - gustos_incluidos(nombre))
+    if extras:
+        precio = precio + extras * precio_gusto_extra()
+    return f"{nombre} ({', '.join(gustos)})", precio
 
 
 # ---------------------------------------------------------------- clientes (delivery)
@@ -611,7 +662,10 @@ def deps_comandera():
     """Funciones que el módulo comandera necesita (evita import circular)."""
     return {"db": db, "cfg_get": cfg_get, "centrar": centrar,
             "imprimir_texto": imprimir_texto, "categorias": CATEGORIAS,
-            "ancho": ANCHO_TICKET, "precio_vigente": precio_vigente}
+            "ancho": ANCHO_TICKET, "precio_vigente": precio_vigente,
+            "gustos_pizza": GUSTOS_PIZZA, "lleva_gustos": lleva_gustos,
+            "gustos_incluidos": gustos_incluidos,
+            "precio_gusto_extra": precio_gusto_extra}
 
 
 # ---------------------------------------------------------------- IP fija (Windows)
@@ -1063,22 +1117,27 @@ class MesaWindow(tk.Toplevel):
         cant = max(self.var_cant.get(), 1)
         con = db()
         row = con.execute(
-            "SELECT nombre, precio, usar_stock, stock, promo_precio, "
-            "promo_desde, promo_hasta FROM productos WHERE id=?",
-            (pid,)).fetchone()
+            "SELECT nombre, precio, categoria, usar_stock, stock, "
+            "promo_precio, promo_desde, promo_hasta FROM productos "
+            "WHERE id=?", (pid,)).fetchone()
+        con.close()
         if not row:
-            con.close()
             return
-        nombre, precio, usar_stock, stock, pp, pdesde, phasta = row
+        nombre, precio, categoria, usar_stock, stock, pp, pdesde, phasta = row
         precio = precio_vigente(precio, pp, pdesde, phasta)
         if usar_stock and (stock or 0) < cant:
-            con.close()
             messagebox.showerror(
                 "Sin stock",
                 f"No hay stock suficiente de \"{nombre}\" "
                 f"(quedan {int(stock or 0)}).", parent=self)
             return
+        if lleva_gustos(nombre, categoria):
+            gustos = elegir_gustos(self, nombre)
+            if gustos is None:
+                return  # canceló
+            nombre, precio = aplicar_gustos(nombre, precio, gustos)
         comensal = self.cb_comensal.current()  # 0 = cuenta general
+        con = db()
         con.execute(
             "INSERT INTO pedidos(mesa, nombre, precio, cantidad, comensal) "
             "VALUES (?,?,?,?,?)", (self.numero, nombre, precio, cant, comensal))
@@ -1361,6 +1420,45 @@ class MesaWindow(tk.Toplevel):
         self._guardar_mesa()
         self.app.refrescar_mesas()
         self.destroy()
+
+
+# ---------------------------------------------------------------- diálogo de gustos
+
+def elegir_gustos(parent, nombre):
+    """Diálogo para marcar los gustos de una pizzeta desde la PC.
+    Devuelve la lista elegida (puede ser vacía) o None si se canceló."""
+    dlg = tk.Toplevel(parent)
+    dlg.title("Gustos de la pizzeta")
+    dlg.configure(bg=COL_BG)
+    dlg.transient(parent)
+    dlg.grab_set()
+    ttk.Label(dlg, text=nombre, style="Titulo.TLabel")\
+        .pack(padx=25, pady=(14, 2))
+    incluidos = gustos_incluidos(nombre)
+    pge = precio_gusto_extra()
+    aviso = f"Incluye {incluidos} gusto. " if incluidos else ""
+    ttk.Label(dlg, text=f"{aviso}Cada gusto extra suma {fmt(pge)}.",
+              foreground=COL_MUTED).pack(padx=25)
+    variables = {g: tk.BooleanVar(value=False) for g in GUSTOS_PIZZA}
+    caja = ttk.Frame(dlg)
+    caja.pack(padx=30, pady=10)
+    for i, g in enumerate(GUSTOS_PIZZA):
+        ttk.Checkbutton(caja, text=g, variable=variables[g])\
+            .grid(row=i // 2, column=i % 2, sticky="w", padx=10, pady=4)
+    resultado = {"ok": False}
+    def aceptar():
+        resultado["ok"] = True
+        dlg.destroy()
+    botones = ttk.Frame(dlg)
+    botones.pack(pady=(4, 14))
+    ttk.Button(botones, text="Cancelar",
+               command=dlg.destroy).pack(side="left", padx=8)
+    ttk.Button(botones, text="Agregar", style="Accent.TButton",
+               command=aceptar).pack(side="left")
+    dlg.wait_window()
+    if not resultado["ok"]:
+        return None
+    return [g for g in GUSTOS_PIZZA if variables[g].get()]
 
 
 # ---------------------------------------------------------------- marco con scroll
@@ -1796,13 +1894,13 @@ class VentaDirectaWindow(tk.Toplevel):
         cant = max(self.var_cant.get(), 1)
         con = db()
         row = con.execute(
-            "SELECT nombre, precio, usar_stock, stock, promo_precio, "
-            "promo_desde, promo_hasta FROM productos WHERE id=?",
-            (pid,)).fetchone()
+            "SELECT nombre, precio, categoria, usar_stock, stock, "
+            "promo_precio, promo_desde, promo_hasta FROM productos "
+            "WHERE id=?", (pid,)).fetchone()
         con.close()
         if not row:
             return
-        nombre, precio, usar_stock, stock, pp, pdesde, phasta = row
+        nombre, precio, categoria, usar_stock, stock, pp, pdesde, phasta = row
         precio = precio_vigente(precio, pp, pdesde, phasta)
         if usar_stock and (stock or 0) - self._en_pedido(pid) < cant:
             disponible = int((stock or 0) - self._en_pedido(pid))
@@ -1811,8 +1909,13 @@ class VentaDirectaWindow(tk.Toplevel):
                 f"No hay stock suficiente de \"{nombre}\" "
                 f"(quedan {max(disponible, 0)}).", parent=self)
             return
+        if lleva_gustos(nombre, categoria):
+            gustos = elegir_gustos(self, nombre)
+            if gustos is None:
+                return  # canceló
+            nombre, precio = aplicar_gustos(nombre, precio, gustos)
         for it in self.items:
-            if it[0] == pid and it[2] == precio:
+            if it[0] == pid and it[1] == nombre and it[2] == precio:
                 it[3] += cant
                 break
         else:

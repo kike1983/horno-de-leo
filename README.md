@@ -59,8 +59,13 @@ Los datos se guardan en `~/.restaurante_armenio/`:
   Ventana propia para buscar, corregir, borrar o elegir un cliente.
 - **Productos**: la carta completa de El Horno de Leo ya está cargada
   (entradas, lehemeyuns, shawarmas, milanesas, pizzetas, bebidas, cervezas,
-  vino y postres) con las categorías Entrada / Menú / Bebida / Postre.
-  Alta, edición y baja de productos.
+  vino y postres) con las categorías Entrada / Armenios / Minutas /
+  Pizzería / Bebida / Postre. Alta, edición y baja de productos.
+- **Pizzería con gustos**: las pizzetas y el tere abren la selección de
+  gustos (aceitunas, tomate, panceta, roquefort, albahaca, cheddar, rúcula)
+  tanto en la PC como en la comandera. Los gustos elegidos salen en la
+  comanda de cocina, y los que exceden lo incluido ("Pizzeta 1 Gusto"
+  incluye uno) se cobran solos como Gusto Extra.
 - **Promociones por tiempo limitado**: a cualquier producto se le puede poner
   un precio de promoción con fecha desde/hasta; mientras está vigente se
   cobra ese precio en las mesas, en mostrador/delivery y en la comandera

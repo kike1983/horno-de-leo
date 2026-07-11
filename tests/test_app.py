@@ -24,7 +24,7 @@ shawarma = con.execute("SELECT precio, categoria FROM productos WHERE nombre='Sh
 baklava = con.execute("SELECT precio, categoria FROM productos WHERE nombre='Baklava'").fetchone()
 con.close()
 assert n_prod == len(r.CARTA_HORNO_DE_LEO) == 42, n_prod
-assert shawarma == (490, "Menú") and baklava == (190, "Postre")
+assert shawarma == (490, "Armenios") and baklava == (190, "Postre")
 assert r.cfg_get("nombre") == "El Horno de Leo"
 print(f"OK carta: {n_prod} productos reales cargados")
 
@@ -400,6 +400,74 @@ ag._eliminar()   # askyesno simulado en True
 assert r.cliente_buscar("098765432") is None
 ag.destroy()
 print("OK agenda: ventana con búsqueda, alta manual y eliminación")
+
+# ================================================= v1.9: categorías y gustos
+
+# migración: productos que quedaron en la vieja categoría "Menú"
+con = r.db()
+con.execute("UPDATE productos SET categoria='Menú' WHERE nombre LIKE 'Pizzeta%'")
+con.execute("UPDATE productos SET categoria='Menú' WHERE nombre LIKE 'Milanesa%'")
+con.execute("UPDATE productos SET categoria='Menú' WHERE nombre LIKE 'Shawarma%'")
+con.execute("INSERT INTO productos(nombre, precio, categoria) "
+            "VALUES ('Tarta casera', 300, 'Menú')")  # agregado a mano
+con.commit(); con.close()
+r.init_db()  # la migración corre al abrir el programa
+con = r.db()
+cats = dict(con.execute("SELECT nombre, categoria FROM productos WHERE nombre "
+                        "IN ('Pizzeta c/Muzza','Milanesa al Pan c/Fritas',"
+                        "'Shawarma Vegano','Tarta casera')"))
+n_menu = con.execute("SELECT COUNT(*) FROM productos "
+                     "WHERE categoria='Menú'").fetchone()[0]
+con.execute("DELETE FROM productos WHERE nombre='Tarta casera'")
+con.commit(); con.close()
+assert cats == {"Pizzeta c/Muzza": "Pizzería",
+                "Milanesa al Pan c/Fritas": "Minutas",
+                "Shawarma Vegano": "Armenios",
+                "Tarta casera": "Minutas"}, cats
+assert n_menu == 0
+print("OK migración: Menú separado en Armenios / Minutas / Pizzería")
+
+# gustos: reglas y cobro
+assert r.lleva_gustos("Pizzeta 1 Gusto", "Pizzería") is True
+assert r.lleva_gustos("Tere c/Muzza", "Pizzería") is True
+assert r.lleva_gustos("Gusto Extra (pizzeta)", "Pizzería") is False
+assert r.lleva_gustos("Papas Fritas", "Minutas") is False
+assert r.gustos_incluidos("Pizzeta 1 Gusto") == 1
+assert r.gustos_incluidos("Pizzeta c/Muzza") == 0
+assert r.precio_gusto_extra() == 90
+nom, pre = r.aplicar_gustos("Pizzeta 1 Gusto", 500, ["Roquefort"])
+assert (nom, pre) == ("Pizzeta 1 Gusto (Roquefort)", 500)   # 1 incluido
+nom, pre = r.aplicar_gustos("Pizzeta 1 Gusto", 500,
+                            ["Roquefort", "Panceta", "Rúcula"])
+assert (nom, pre) == ("Pizzeta 1 Gusto (Roquefort, Panceta, Rúcula)", 680)
+nom, pre = r.aplicar_gustos("Pizzeta c/Muzza", 450, ["Cheddar"])
+assert (nom, pre) == ("Pizzeta c/Muzza (Cheddar)", 540)     # sin incluidos
+nom, pre = r.aplicar_gustos("Tere c/Muzza", 550, [])
+assert (nom, pre) == ("Tere c/Muzza", 550)
+nom, pre = r.aplicar_gustos("Pizzeta c/Muzza", 450, ["Inventado"])
+assert (nom, pre) == ("Pizzeta c/Muzza", 450)               # gusto inválido
+print("OK gustos: incluidos, extras cobrados y validación")
+
+# en una venta de mostrador, la pizzeta abre el diálogo de gustos
+# (simulado: el operador marca Panceta y Cheddar)
+elegir_original = r.elegir_gustos
+r.elegir_gustos = lambda parent, nombre: ["Panceta", "Cheddar"]
+vg = r.VentaDirectaWindow(app, "mostrador")
+for iid in vg.tree_prod.get_children():
+    if "Pizzeta 1 Gusto" in vg.tree_prod.item(iid, "text"):
+        vg.tree_prod.selection_set(iid)
+        break
+vg.var_cant.set(1)
+vg._agregar()
+assert vg.items[0][1] == "Pizzeta 1 Gusto (Panceta, Cheddar)", vg.items
+assert vg.items[0][2] == 590, vg.items   # 500 + 1 gusto extra (90)
+# cancelar el diálogo no agrega nada
+r.elegir_gustos = lambda parent, nombre: None
+vg._agregar()
+assert len(vg.items) == 1
+r.elegir_gustos = elegir_original
+vg.destroy()
+print("OK gustos en venta de mostrador: nombre anotado y extra cobrado")
 
 # ================================================= v1.6: actualizador
 
