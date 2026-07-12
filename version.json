@@ -1,5 +1,5 @@
 {
-  "version": "2.0",
+  "version": "2.0.1",
   "archivos": ["restaurante.py", "comandera.py", "icono.png", "icono.ico"],
-  "novedades": "Carta digital para los clientes: se abre desde el QR de la mesa sin necesidad del WiFi del local (queda publicada en internet y se actualiza sola al cambiar precios, productos o promociones). Botón de cartelitos QR imprimibles, uno por mesa, en Configuración."
+  "novedades": "El acceso directo 'El Horno de Leo' del escritorio se crea solo al abrir el programa si falta (arregla instalaciones donde el instalador no pudo crearlo)."
 }

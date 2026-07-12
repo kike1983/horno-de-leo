@@ -37,7 +37,7 @@ import comandera  # servidor web para que los mozos pidan desde el celular
 
 # ---------------------------------------------------------------- rutas / constantes
 
-VERSION = "2.0"
+VERSION = "2.0.1"
 
 APP_DIR = os.path.join(os.path.expanduser("~"), ".restaurante_armenio")
 DB_PATH = os.path.join(APP_DIR, "restaurante.db")
@@ -1222,6 +1222,46 @@ def ejecutar_bat_admin(texto_bat):
         return ("No se pudo ejecutar (¿se canceló el permiso de "
                 f"administrador?). El archivo quedó en:\n{ruta}")
     return None
+
+
+# ---------------------------------------------------------------- acceso directo
+
+def asegurar_acceso_directo():
+    """En Windows: si falta el acceso directo "El Horno de Leo" en el
+    escritorio, lo crea con el logo (apuntando a esta instalación). Corre
+    al abrir el programa, así se repara solo aunque el instalador haya
+    fallado en ese paso."""
+    if not sys.platform.startswith("win"):
+        return
+    try:
+        carpeta = os.path.dirname(os.path.abspath(__file__))
+        piton = sys.executable
+        pw = os.path.join(os.path.dirname(piton), "pythonw.exe")
+        if os.path.basename(piton).lower() == "python.exe" \
+                and os.path.exists(pw):
+            piton = pw  # sin ventana de consola
+        script = os.path.join(carpeta, "restaurante.py")
+        icono = os.path.join(carpeta, "icono.ico")
+        # PowerShell recibe el guion como UN argumento (sin pasar por las
+        # comillas de cmd, que era lo que fallaba en el instalador)
+        guion = (
+            "$ws = New-Object -ComObject WScript.Shell; "
+            "$ruta = [Environment]::GetFolderPath('Desktop') "
+            "+ '\\El Horno de Leo.lnk'; "
+            "if (-not (Test-Path $ruta)) { "
+            "$lnk = $ws.CreateShortcut($ruta); "
+            f"$lnk.TargetPath = '{piton}'; "
+            "$lnk.Arguments = '\"" + script + "\"'; "
+            f"$lnk.WorkingDirectory = '{carpeta}'; "
+            + (f"$lnk.IconLocation = '{icono}'; "
+               if os.path.exists(icono) else "")
+            + "$lnk.Description = 'El Horno de Leo - Gestion del "
+              "restaurante'; $lnk.Save() }")
+        subprocess.run(["powershell", "-NoProfile", "-Command", guion],
+                       timeout=30, creationflags=0x08000000,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass  # sin acceso directo el programa funciona igual
 
 
 # ---------------------------------------------------------------- campana
@@ -2652,6 +2692,9 @@ class App(tk.Tk):
         if sys.platform.startswith("win") \
                 and cfg_get("ip_fija_ofrecida", "0") != "1":
             self.after(1500, self._ofrecer_ip_fija)
+        # el acceso directo del escritorio se crea/repara solo (Windows)
+        threading.Thread(target=asegurar_acceso_directo,
+                         daemon=True).start()
 
     # ------------------------------------------------ comandera de mozos
 
