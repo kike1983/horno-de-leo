@@ -537,6 +537,10 @@ r.cfg_set("gh_token", "")
 assert "publicación" in r.publicar_carta()
 print("OK publicar sin token devuelve aviso claro")
 
+# acceso directo: en Linux no hace nada y no rompe
+assert r.asegurar_acceso_directo() is None
+print("OK asegurar_acceso_directo es inofensivo fuera de Windows")
+
 # ================================================= v1.6: actualizador
 
 import json, threading, functools
