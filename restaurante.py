@@ -37,7 +37,7 @@ import comandera  # servidor web para que los mozos pidan desde el celular
 
 # ---------------------------------------------------------------- rutas / constantes
 
-VERSION = "2.0.1"
+VERSION = "2.0.2"
 
 APP_DIR = os.path.join(os.path.expanduser("~"), ".restaurante_armenio")
 DB_PATH = os.path.join(APP_DIR, "restaurante.db")
@@ -1405,9 +1405,8 @@ class MesaWindow(tk.Toplevel):
         self.app = app
         self.numero = numero
         self.title(f"Mesa {numero}")
-        self.geometry("1000x640")
+        ajustar_ventana(self, 1000, 640)
         self.configure(bg=COL_BG)
-        self.transient(app)
 
         con = db()
         row = con.execute(
@@ -1519,8 +1518,12 @@ class MesaWindow(tk.Toplevel):
         self.lbl_total.pack(side="right")
 
         # --- acciones ----------------------------------------------------
+        # el pie se ancla abajo y con prioridad: si la pantalla es chica
+        # se achica la lista, nunca los botones de cobro
         pie = ttk.Frame(self, style="Panel.TFrame", padding=10)
-        pie.pack(fill="x")
+        pie.pack(side="bottom", fill="x")
+        cuerpo.pack_forget()
+        cuerpo.pack(fill="both", expand=True)
         ttk.Button(pie, text="🖨  Comanda cocina",
                    command=self._imprimir_comanda).pack(side="left")
         ttk.Button(pie, text="🖨  Pre-cuenta",
@@ -1988,6 +1991,19 @@ def elegir_gustos(parent, nombre):
     return [g for g in GUSTOS_PIZZA if variables[g].get()]
 
 
+# ---------------------------------------------------------------- tamaño ventanas
+
+def ajustar_ventana(win, ancho, alto):
+    """Deja la ventana en un tamaño que entre en la pantalla (monitores
+    chicos o Windows con escala 125/150%) y centrada. Sin transient():
+    en Windows las ventanas transitorias pierden el botón de maximizar."""
+    ancho = min(ancho, win.winfo_screenwidth() - 40)
+    alto = min(alto, win.winfo_screenheight() - 100)
+    x = max((win.winfo_screenwidth() - ancho) // 2, 0)
+    y = max((win.winfo_screenheight() - alto) // 2 - 30, 10)
+    win.geometry(f"{ancho}x{alto}+{x}+{y}")
+
+
 # ---------------------------------------------------------------- marco con scroll
 
 class MarcoScroll(ttk.Frame):
@@ -2049,9 +2065,8 @@ class AgendaClientesWindow(tk.Toplevel):
         super().__init__(padre)
         self.elegir = elegir  # callback(telefono, nombre, direccion) o None
         self.title("Agenda de clientes — Delivery")
-        self.geometry("820x520")
+        ajustar_ventana(self, 820, 520)
         self.configure(bg=COL_BG)
-        self.transient(padre)
 
         top = ttk.Frame(self, style="Panel.TFrame", padding=10)
         top.pack(fill="x")
@@ -2104,7 +2119,9 @@ class AgendaClientesWindow(tk.Toplevel):
             .grid(row=0, column=5, sticky="ew", padx=(4, 0))
 
         pie = ttk.Frame(self, style="Panel.TFrame", padding=(10, 0, 10, 10))
-        pie.pack(fill="x")
+        pie.pack(side="bottom", fill="x")
+        cuerpo.pack_forget()
+        cuerpo.pack(fill="both", expand=True)
         ttk.Button(pie, text="💾  Guardar cliente",
                    command=self._guardar).pack(side="left")
         ttk.Button(pie, text="🗑  Eliminar",
@@ -2198,9 +2215,8 @@ class VentaDirectaWindow(tk.Toplevel):
         etiqueta = CANAL_NOMBRE[canal]
         icono = "🛍" if canal == "mostrador" else "🛵"
         self.title(f"Venta {etiqueta}")
-        self.geometry("1020x640")
+        ajustar_ventana(self, 1020, 640)
         self.configure(bg=COL_BG)
-        self.transient(app)
         self.items = []  # [pid, nombre, precio, cantidad]
 
         # --- encabezado: datos del cliente -------------------------------
@@ -2317,8 +2333,12 @@ class VentaDirectaWindow(tk.Toplevel):
         self.lbl_total.pack(side="right")
 
         # --- acciones -----------------------------------------------------
+        # el pie se ancla abajo y con prioridad: si la pantalla es chica
+        # se achica la lista, nunca el botón de COBRAR
         pie = ttk.Frame(self, style="Panel.TFrame", padding=10)
-        pie.pack(fill="x")
+        pie.pack(side="bottom", fill="x")
+        cuerpo.pack_forget()
+        cuerpo.pack(fill="both", expand=True)
         ttk.Button(pie, text="🖨  Comanda cocina",
                    command=self._imprimir_comanda).pack(side="left")
         ttk.Button(pie, text="Cerrar sin cobrar",
@@ -2638,8 +2658,8 @@ class App(tk.Tk):
         super().__init__()
         self.title("Gestión — " + cfg_get("nombre", "El Horno de Leo")
                    + f"  ·  v{VERSION}")
-        self.geometry("1180x720")
-        self.minsize(980, 620)
+        ajustar_ventana(self, 1180, 720)
+        self.minsize(900, 560)
         self.configure(bg=COL_BG)
         try:
             # logo del local en la barra de título y la barra de tareas

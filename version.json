@@ -1,5 +1,5 @@
 {
-  "version": "2.0.1",
+  "version": "2.0.2",
   "archivos": ["restaurante.py", "comandera.py", "icono.png", "icono.ico"],
-  "novedades": "El acceso directo 'El Horno de Leo' del escritorio se crea solo al abrir el programa si falta (arregla instalaciones donde el instalador no pudo crearlo)."
+  "novedades": "Ventanas arregladas para Windows: las de mesa, mostrador/delivery y agenda ahora tienen botón de maximizar, se adaptan al tamaño de la pantalla y el botón de COBRAR queda siempre visible (si falta espacio se achica la lista, no los botones)."
 }
