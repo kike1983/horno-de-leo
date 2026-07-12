@@ -36,7 +36,7 @@ import comandera  # servidor web para que los mozos pidan desde el celular
 
 # ---------------------------------------------------------------- rutas / constantes
 
-VERSION = "1.9"
+VERSION = "1.9.1"
 
 APP_DIR = os.path.join(os.path.expanduser("~"), ".restaurante_armenio")
 DB_PATH = os.path.join(APP_DIR, "restaurante.db")
@@ -143,11 +143,9 @@ CARTA_HORNO_DE_LEO = [
     ("Papas Rústicas", 260, "Minutas"),
     ("Nuggets c/Fritas", 390, "Minutas"),
     ("Bastones de Muzarella", 390, "Minutas"),
-    # Pizzería
+    # Pizzería (los gustos se marcan al pedir y se cobran por gusto)
     ("Pizzeta c/Muzza", 450, "Pizzería"),
-    ("Pizzeta 1 Gusto", 500, "Pizzería"),
     ("Tere c/Muzza", 550, "Pizzería"),
-    ("Gusto Extra (pizzeta)", 90, "Pizzería"),
     # Bebidas
     ("Refresco 600 ml", 160, "Bebida"),
     ("Refresco 1.5 L", 280, "Bebida"),
@@ -259,6 +257,21 @@ def init_db():
     # lo que quede en "Menú" (productos agregados a mano) pasa a Minutas
     cur.execute("UPDATE productos SET categoria='Minutas' "
                 "WHERE categoria='Menú'")
+    # v1.9.1: "Pizzeta 1 Gusto" y "Gusto Extra" salen de la carta: los
+    # gustos se marcan sobre la pizzeta c/muzza o el tere, y cada gusto
+    # se cobra según el precio de configuración (precio_gusto)
+    if not cur.execute("SELECT 1 FROM config "
+                       "WHERE clave='mig_pizzeta'").fetchone():
+        viejo = cur.execute("SELECT precio FROM productos WHERE nombre "
+                            "LIKE 'Gusto Extra%' ORDER BY id LIMIT 1")\
+            .fetchone()
+        if viejo:  # conservar el precio que tenía el Gusto Extra
+            cur.execute("INSERT OR REPLACE INTO config(clave, valor) "
+                        "VALUES ('precio_gusto', ?)", (str(viejo[0]),))
+        cur.execute("DELETE FROM productos WHERE nombre='Pizzeta 1 Gusto' "
+                    "OR nombre LIKE 'Gusto Extra%'")
+        cur.execute("INSERT OR REPLACE INTO config(clave, valor) "
+                    "VALUES ('mig_pizzeta', '1')")
     # WAL: la interfaz y la comandera pueden leer/escribir a la vez
     con.commit()  # cerrar la transacción de las migraciones (WAL lo exige)
     cur.execute("PRAGMA journal_mode = WAL")
@@ -277,6 +290,7 @@ def init_db():
             ("imp_dev", "/dev/usb/lp0"),
             ("imp_corte", "1"),
             ("imp_grande", "1"),
+            ("precio_gusto", "90"),
             ("mozos_activo", "1"),
             ("mozos_puerto", str(comandera.PUERTO_DEFECTO)),
             ("mozos_comanda", "1"),
@@ -324,11 +338,11 @@ def gustos_incluidos(nombre):
 
 
 def precio_gusto_extra():
-    con = db()
-    row = con.execute("SELECT precio FROM productos WHERE nombre LIKE "
-                      "'Gusto Extra%' ORDER BY id LIMIT 1").fetchone()
-    con.close()
-    return row[0] if row else 0
+    """Lo que suma cada gusto de pizzería (configurable en Productos)."""
+    try:
+        return float(cfg_get("precio_gusto", "90") or 0)
+    except ValueError:
+        return 90.0
 
 
 def aplicar_gustos(nombre, precio, gustos):
@@ -954,7 +968,10 @@ class MesaWindow(tk.Toplevel):
         self.tree_prod.tag_configure("bajo", foreground=COL_BAJO)
         self.tree_prod.tag_configure("promo", foreground=COL_ACCENT2)
         self.tree_prod.grid(row=1, column=0, columnspan=2, sticky="nsew")
-        self.tree_prod.bind("<Double-1>", lambda e: self._agregar())
+        # diferido: si el diálogo de gustos se abre en medio del doble
+        # clic, el mouse queda "agarrado" y las casillas no responden
+        self.tree_prod.bind("<Double-1>",
+                            lambda e: self.after(120, self._agregar))
 
         fila = ttk.Frame(izq)
         fila.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
@@ -1431,14 +1448,15 @@ def elegir_gustos(parent, nombre):
     dlg.title("Gustos de la pizzeta")
     dlg.configure(bg=COL_BG)
     dlg.transient(parent)
-    dlg.grab_set()
     ttk.Label(dlg, text=nombre, style="Titulo.TLabel")\
         .pack(padx=25, pady=(14, 2))
     incluidos = gustos_incluidos(nombre)
     pge = precio_gusto_extra()
-    aviso = f"Incluye {incluidos} gusto. " if incluidos else ""
-    ttk.Label(dlg, text=f"{aviso}Cada gusto extra suma {fmt(pge)}.",
-              foreground=COL_MUTED).pack(padx=25)
+    if incluidos:
+        aviso = f"Incluye {incluidos} gusto; cada gusto de más suma {fmt(pge)}."
+    else:
+        aviso = f"Cada gusto suma {fmt(pge)}."
+    ttk.Label(dlg, text=aviso, foreground=COL_MUTED).pack(padx=25)
     variables = {g: tk.BooleanVar(value=False) for g in GUSTOS_PIZZA}
     caja = ttk.Frame(dlg)
     caja.pack(padx=30, pady=10)
@@ -1455,6 +1473,14 @@ def elegir_gustos(parent, nombre):
                command=dlg.destroy).pack(side="left", padx=8)
     ttk.Button(botones, text="Agregar", style="Accent.TButton",
                command=aceptar).pack(side="left")
+    # el grab recién cuando la ventana es visible: si se toma antes
+    # (por ej. abierta con doble clic), las casillas quedan muertas
+    try:
+        dlg.wait_visibility()
+        dlg.grab_set()
+        dlg.focus_set()
+    except tk.TclError:
+        pass
     dlg.wait_window()
     if not resultado["ok"]:
         return None
@@ -1744,7 +1770,10 @@ class VentaDirectaWindow(tk.Toplevel):
         self.tree_prod.tag_configure("bajo", foreground=COL_BAJO)
         self.tree_prod.tag_configure("promo", foreground=COL_ACCENT2)
         self.tree_prod.grid(row=1, column=0, columnspan=2, sticky="nsew")
-        self.tree_prod.bind("<Double-1>", lambda e: self._agregar())
+        # diferido: si el diálogo de gustos se abre en medio del doble
+        # clic, el mouse queda "agarrado" y las casillas no responden
+        self.tree_prod.bind("<Double-1>",
+                            lambda e: self.after(120, self._agregar))
 
         fila = ttk.Frame(izq)
         fila.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
@@ -2621,7 +2650,33 @@ class App(tk.Tk):
                                        foreground=COL_BAJO)
         self.lbl_faltantes.grid(row=2, column=0, columnspan=2,
                                 sticky="w", pady=(8, 0))
+
+        fila_gusto = ttk.Frame(f, style="Panel.TFrame")
+        fila_gusto.grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ttk.Label(fila_gusto, text="Pizzería — precio de cada gusto "
+                  "(aceitunas, panceta, etc.): $").pack(side="left")
+        self.var_precio_gusto = tk.StringVar(
+            value=f"{precio_gusto_extra():g}")
+        ttk.Entry(fila_gusto, textvariable=self.var_precio_gusto,
+                  width=7).pack(side="left", padx=4)
+        ttk.Button(fila_gusto, text="💾  Guardar",
+                   command=self._guardar_precio_gusto).pack(side="left",
+                                                            padx=6)
         self._cargar_productos()
+
+    def _guardar_precio_gusto(self):
+        try:
+            precio = float(self.var_precio_gusto.get().replace(",", "."))
+            if precio < 0:
+                raise ValueError
+        except ValueError:
+            messagebox.showerror("Gustos", "El precio del gusto no es válido.",
+                                 parent=self)
+            return
+        cfg_set("precio_gusto", f"{precio:g}")
+        messagebox.showinfo(
+            "Gustos", f"Listo: cada gusto de pizzería suma {fmt(precio)}.",
+            parent=self)
 
     def _texto_promo(self, promo, desde, hasta):
         """Cómo se muestra la promoción en la lista de productos."""

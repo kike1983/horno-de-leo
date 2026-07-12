@@ -206,15 +206,15 @@ assert estado["gustos_pizza"] == ["Aceitunas", "Tomate", "Panceta",
                                   "Roquefort", "Albahaca", "Cheddar", "Rúcula"]
 assert estado["gusto_extra"] == 90
 por_nombre = {p["nombre"]: p for p in estado["productos"]}
-assert por_nombre["Pizzeta 1 Gusto"]["gustos"] is True
-assert por_nombre["Pizzeta 1 Gusto"]["incluidos"] == 1
+assert "Pizzeta 1 Gusto" not in por_nombre        # salió de la carta
+assert "Gusto Extra (pizzeta)" not in por_nombre  # salió de la carta
+assert por_nombre["Pizzeta c/Muzza"]["gustos"] is True
+assert por_nombre["Pizzeta c/Muzza"]["incluidos"] == 0
 assert por_nombre["Tere c/Muzza"]["gustos"] is True
-assert por_nombre["Tere c/Muzza"]["incluidos"] == 0
-assert por_nombre["Gusto Extra (pizzeta)"]["gustos"] is False
 assert por_nombre["Shawarma Clásico"]["categoria"] == "Armenios"
 assert por_nombre["Papas Fritas"]["categoria"] == "Minutas"
 
-pid_pizzeta = por_nombre["Pizzeta 1 Gusto"]["id"]
+pid_pizzeta = por_nombre["Pizzeta c/Muzza"]["id"]
 code, resp = POST("/api/pedido", {"mesa": 6, "mozo": "Caro", "items": [
     {"id": pid_pizzeta, "cantidad": 1,
      "gustos": ["Roquefort", "Panceta"]}]})
@@ -223,7 +223,7 @@ con = r.db()
 fila = con.execute("SELECT nombre, precio FROM pedidos "
                    "WHERE mesa=6").fetchone()
 con.close()
-assert fila == ("Pizzeta 1 Gusto (Roquefort, Panceta)", 590), fila
+assert fila == ("Pizzeta c/Muzza (Roquefort, Panceta)", 630), fila
 # un gusto que no existe se rechaza entero
 code, _ = POST("/api/pedido", {"mesa": 6, "mozo": "Caro", "items": [
     {"id": pid_pizzeta, "cantidad": 1, "gustos": ["Ananá"]}]})

@@ -23,7 +23,7 @@ n_prod = con.execute("SELECT COUNT(*) FROM productos").fetchone()[0]
 shawarma = con.execute("SELECT precio, categoria FROM productos WHERE nombre='Shawarma de Pollo'").fetchone()
 baklava = con.execute("SELECT precio, categoria FROM productos WHERE nombre='Baklava'").fetchone()
 con.close()
-assert n_prod == len(r.CARTA_HORNO_DE_LEO) == 42, n_prod
+assert n_prod == len(r.CARTA_HORNO_DE_LEO) == 40, n_prod
 assert shawarma == (490, "Armenios") and baklava == (190, "Postre")
 assert r.cfg_get("nombre") == "El Horno de Leo"
 print(f"OK carta: {n_prod} productos reales cargados")
@@ -142,7 +142,7 @@ print("OK reporte:", app.lbl_resumen.cget("text"))
 # --- recargar carta
 app._recargar_carta()
 con = r.db()
-assert con.execute("SELECT COUNT(*) FROM productos").fetchone()[0] == 42
+assert con.execute("SELECT COUNT(*) FROM productos").fetchone()[0] == 40
 con.close()
 print("OK recargar carta")
 
@@ -454,20 +454,41 @@ elegir_original = r.elegir_gustos
 r.elegir_gustos = lambda parent, nombre: ["Panceta", "Cheddar"]
 vg = r.VentaDirectaWindow(app, "mostrador")
 for iid in vg.tree_prod.get_children():
-    if "Pizzeta 1 Gusto" in vg.tree_prod.item(iid, "text"):
+    if "Pizzeta c/Muzza" in vg.tree_prod.item(iid, "text"):
         vg.tree_prod.selection_set(iid)
         break
 vg.var_cant.set(1)
 vg._agregar()
-assert vg.items[0][1] == "Pizzeta 1 Gusto (Panceta, Cheddar)", vg.items
-assert vg.items[0][2] == 590, vg.items   # 500 + 1 gusto extra (90)
+assert vg.items[0][1] == "Pizzeta c/Muzza (Panceta, Cheddar)", vg.items
+assert vg.items[0][2] == 630, vg.items   # 450 + 2 gustos de 90
 # cancelar el diálogo no agrega nada
 r.elegir_gustos = lambda parent, nombre: None
 vg._agregar()
 assert len(vg.items) == 1
 r.elegir_gustos = elegir_original
 vg.destroy()
-print("OK gustos en venta de mostrador: nombre anotado y extra cobrado")
+print("OK gustos en venta de mostrador: nombre anotado y gustos cobrados")
+
+# migración v1.9.1: "Pizzeta 1 Gusto" y "Gusto Extra" desaparecen de la
+# carta y el precio que tenía el Gusto Extra queda como precio del gusto
+con = r.db()
+assert con.execute("SELECT COUNT(*) FROM productos WHERE nombre IN "
+                   "('Pizzeta 1 Gusto','Gusto Extra (pizzeta)')")\
+    .fetchone()[0] == 0
+con.execute("INSERT INTO productos(nombre, precio, categoria) VALUES "
+            "('Pizzeta 1 Gusto', 500, 'Pizzería'), "
+            "('Gusto Extra (pizzeta)', 95, 'Pizzería')")
+con.execute("DELETE FROM config WHERE clave='mig_pizzeta'")
+con.commit(); con.close()
+r.init_db()
+con = r.db()
+assert con.execute("SELECT COUNT(*) FROM productos WHERE nombre IN "
+                   "('Pizzeta 1 Gusto','Gusto Extra (pizzeta)')")\
+    .fetchone()[0] == 0
+con.close()
+assert r.precio_gusto_extra() == 95   # conservó el precio del producto viejo
+r.cfg_set("precio_gusto", "90")
+print("OK migración pizzería: productos viejos afuera, precio conservado")
 
 # ================================================= v1.6: actualizador
 

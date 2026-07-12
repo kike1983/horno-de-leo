@@ -836,9 +836,10 @@ let gustoProd = null;
 function abrirGustos(p) {
   gustoProd = p;
   $("gTitulo").textContent = p.nombre;
-  $("gNota").textContent =
-    (p.incluidos ? "Incluye " + p.incluidos + " gusto. " : "") +
-    "Cada gusto extra suma " + fmt(estado.gusto_extra || 0) + ".";
+  $("gNota").textContent = p.incluidos
+    ? "Incluye " + p.incluidos + " gusto; cada gusto de más suma "
+      + fmt(estado.gusto_extra || 0) + "."
+    : "Cada gusto suma " + fmt(estado.gusto_extra || 0) + ".";
   const caja = $("gLista");
   caja.replaceChildren();
   for (const g of estado.gustos_pizza || []) {

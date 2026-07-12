@@ -1,5 +1,5 @@
 {
-  "version": "1.9",
+  "version": "1.9.1",
   "archivos": ["restaurante.py", "comandera.py", "icono.png", "icono.ico"],
-  "novedades": "La carta se separa en Armenios / Minutas / Pizzería (antes todo junto en Menú). Las pizzetas abren la selección de gustos (aceitunas, tomate, panceta, roquefort, albahaca, cheddar, rúcula) en la comandera y en la PC: los gustos salen en la comanda de cocina y los que exceden lo incluido se cobran solos como Gusto Extra."
+  "novedades": "Pizzería simplificada: se marcan los gustos directo sobre la pizzeta c/muzza o el tere (salieron de la carta 'Pizzeta 1 Gusto' y 'Gusto Extra'); el precio de cada gusto se cambia en la pestaña Productos. Arreglado el diálogo de gustos al hacer doble clic en la PC."
 }
