@@ -305,6 +305,10 @@ class _Handler(BaseHTTPRequestHandler):
             if url.path == "/":
                 self._responder(PAGINA.encode("utf-8"),
                                 "text/html; charset=utf-8")
+            elif url.path == "/carta":
+                # carta para los clientes (misma que la publicada online)
+                self._responder(_d["carta_html"]().encode("utf-8"),
+                                "text/html; charset=utf-8")
             elif url.path == "/manifest.json":
                 self._responder(MANIFIESTO.encode("utf-8"),
                                 "application/manifest+json; charset=utf-8")

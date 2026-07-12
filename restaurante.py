@@ -22,6 +22,7 @@ import sys
 import csv
 import glob
 import json
+import base64
 import socket
 import shutil
 import sqlite3
@@ -36,7 +37,7 @@ import comandera  # servidor web para que los mozos pidan desde el celular
 
 # ---------------------------------------------------------------- rutas / constantes
 
-VERSION = "1.9.1"
+VERSION = "2.0"
 
 APP_DIR = os.path.join(os.path.expanduser("~"), ".restaurante_armenio")
 DB_PATH = os.path.join(APP_DIR, "restaurante.db")
@@ -354,6 +355,465 @@ def aplicar_gustos(nombre, precio, gustos):
     if extras:
         precio = precio + extras * precio_gusto_extra()
     return f"{nombre} ({', '.join(gustos)})", precio
+
+
+# ---------------------------------------------------------------- código QR
+# Generador de QR mínimo, solo librería estándar (byte mode, corrección M,
+# versiones 1-3 = hasta 42 caracteres, máscara 0). Verificado contra segno
+# y el lector de OpenCV.
+
+_QR_EXP = [0] * 512
+_QR_LOG = [0] * 256
+_x = 1
+for _i in range(255):
+    _QR_EXP[_i] = _x
+    _QR_LOG[_x] = _i
+    _x <<= 1
+    if _x & 0x100:
+        _x ^= 0x11d
+for _i in range(255, 512):
+    _QR_EXP[_i] = _QR_EXP[_i - 255]
+
+# versión -> (bytes de datos, códigos de corrección) para nivel M
+_QR_VERSIONES = {1: (16, 10), 2: (28, 16), 3: (44, 26)}
+_QR_ALINEACION = {1: [], 2: [6, 18], 3: [6, 22]}
+
+
+def _qr_rs(datos, n_ecc):
+    """Códigos Reed-Solomon de los datos."""
+    gen = [1]
+    for i in range(n_ecc):
+        nuevo = [0] * (len(gen) + 1)
+        for j, c in enumerate(gen):
+            nuevo[j] ^= c
+            nuevo[j + 1] ^= _QR_EXP[(_QR_LOG[c] + i) % 255] if c else 0
+        gen = nuevo
+    resto = list(datos) + [0] * n_ecc
+    for i in range(len(datos)):
+        factor = resto[i]
+        if factor:
+            for j, c in enumerate(gen):
+                if c:
+                    resto[i + j] ^= _QR_EXP[(_QR_LOG[factor]
+                                             + _QR_LOG[c]) % 255]
+    return resto[len(datos):]
+
+
+def matriz_qr(texto):
+    """Matriz de módulos (0/1) del QR para `texto`."""
+    datos = texto.encode("utf-8")
+    version = None
+    for v, (cap, _) in _QR_VERSIONES.items():
+        if len(datos) <= cap - 2:
+            version = v
+            break
+    if version is None:
+        raise ValueError("Texto demasiado largo para el QR (máx. 42).")
+    cap, n_ecc = _QR_VERSIONES[version]
+    lado = 17 + 4 * version
+
+    bits = "0100" + format(len(datos), "08b")
+    for b in datos:
+        bits += format(b, "08b")
+    bits += "0000"
+    bits += "0" * ((8 - len(bits) % 8) % 8)
+    cw = [int(bits[i:i + 8], 2) for i in range(0, len(bits), 8)]
+    relleno = [0xEC, 0x11]
+    i = 0
+    while len(cw) < cap:
+        cw.append(relleno[i % 2])
+        i += 1
+    cw += _qr_rs(cw, n_ecc)
+
+    m = [[None] * lado for _ in range(lado)]
+
+    def finder(fila, col):
+        for r in range(-1, 8):
+            for c in range(-1, 8):
+                rr, cc = fila + r, col + c
+                if 0 <= rr < lado and 0 <= cc < lado:
+                    dentro = 0 <= r <= 6 and 0 <= c <= 6
+                    borde = r in (0, 6) or c in (0, 6)
+                    centro = 2 <= r <= 4 and 2 <= c <= 4
+                    m[rr][cc] = 1 if dentro and (borde or centro) else 0
+
+    finder(0, 0)
+    finder(0, lado - 7)
+    finder(lado - 7, 0)
+    for k in range(8, lado - 8):
+        m[6][k] = m[k][6] = (k + 1) % 2
+    centros = _QR_ALINEACION[version]
+    for fa in centros:
+        for ca in centros:
+            if m[fa][ca] is not None:
+                continue  # pisa un buscador
+            for r in range(-2, 3):
+                for c in range(-2, 3):
+                    m[fa + r][ca + c] = 1 if max(abs(r), abs(c)) != 1 else 0
+    m[lado - 8][8] = 1  # módulo oscuro
+    for k in range(9):
+        if m[8][k] is None:
+            m[8][k] = 0
+        if m[k][8] is None:
+            m[k][8] = 0
+    for k in range(8):
+        if m[8][lado - 1 - k] is None:
+            m[8][lado - 1 - k] = 0
+        if m[lado - 1 - k][8] is None:
+            m[lado - 1 - k][8] = 0
+
+    todos = "".join(format(b, "08b") for b in cw)
+    idx = 0
+    col = lado - 1
+    subir = True
+    while col > 0:
+        if col == 6:
+            col -= 1
+        filas = range(lado - 1, -1, -1) if subir else range(lado)
+        for fila in filas:
+            for cc in (col, col - 1):
+                if m[fila][cc] is None:
+                    bit = int(todos[idx]) if idx < len(todos) else 0
+                    idx += 1
+                    if (fila + cc) % 2 == 0:
+                        bit ^= 1
+                    m[fila][cc] = bit
+        subir = not subir
+        col -= 2
+
+    formato = 0b00000  # nivel M, máscara 0
+    resto = formato << 10
+    for k in range(4, -1, -1):
+        if resto >> (k + 10):
+            resto ^= 0x537 << k
+    fmt = ((formato << 10) | resto) ^ 0x5412
+    fbits = [(fmt >> (14 - k)) & 1 for k in range(15)]
+    pos_a = [(8, 0), (8, 1), (8, 2), (8, 3), (8, 4), (8, 5), (8, 7), (8, 8),
+             (7, 8), (5, 8), (4, 8), (3, 8), (2, 8), (1, 8), (0, 8)]
+    pos_b = [(lado - 1, 8), (lado - 2, 8), (lado - 3, 8), (lado - 4, 8),
+             (lado - 5, 8), (lado - 6, 8), (lado - 7, 8),
+             (8, lado - 8), (8, lado - 7), (8, lado - 6), (8, lado - 5),
+             (8, lado - 4), (8, lado - 3), (8, lado - 2), (8, lado - 1)]
+    for (fa, ca), (fb, cb), bit in zip(pos_a, pos_b, fbits):
+        m[fa][ca] = bit
+        m[fb][cb] = bit
+    return m
+
+
+def svg_qr(texto, modulo=6, borde=2, color="#2b2118"):
+    """El QR como imagen SVG (para incrustar en HTML e imprimir)."""
+    m = matriz_qr(texto)
+    lado = len(m)
+    total = (lado + 2 * borde) * modulo
+    partes = [f'<svg xmlns="http://www.w3.org/2000/svg" '
+              f'viewBox="0 0 {total} {total}"><rect width="100%" '
+              f'height="100%" fill="#ffffff"/>']
+    for f in range(lado):
+        for c in range(lado):
+            if m[f][c]:
+                partes.append(
+                    f'<rect x="{(c + borde) * modulo}" '
+                    f'y="{(f + borde) * modulo}" width="{modulo}" '
+                    f'height="{modulo}" fill="{color}"/>')
+    partes.append("</svg>")
+    return "".join(partes)
+
+
+# ---------------------------------------------------------------- carta digital
+# Carta para los clientes: se publica en internet (GitHub Pages) así se
+# abre desde el QR de la mesa sin necesidad del WiFi del local. El programa
+# la vuelve a publicar solo cuando cambian productos, precios o promos.
+
+URL_CARTA = "https://kike1983.github.io/horno-de-leo/"
+_API_CARTA = ("https://api.github.com/repos/kike1983/horno-de-leo/"
+              "contents/docs/index.html")
+
+DESCRIPCIONES = {
+    "Tabla Armenia": "Pan lavash acompañado de hummus, salsa de yogurt y tabule",
+    "Hummus de Garbanzo": "Pote de 250 g",
+    "Salsa de Yogurt": "Yogurt natural, pepino y ajo",
+    "Lehemeyun Clásico": "Pan plano tradicional con carne picada, verduras y especias",
+    "Lehemeyun Especial": "Clásico con picadillo de tomate, lechuga, cebolla y salsa de yogurt",
+    "Lehemeyun con Muzza": "Pan, muzzarella, tomate y albahaca",
+    "Shawarma Clásico": "Pan lavash, hummus, bondiola de cerdo, salsa de yogurt, tomate, cebolla, zanahoria, repollo y lechuga",
+    "Shawarma de Pollo": "Clásico con picadillo de tomate, lechuga, cebolla y salsa de yogurt",
+    "Shawarma Vegetariano": "Con muzzarella y tabule",
+    "Falafel con Guarnición": "Croquetas de garbanzo fritas",
+    "Borek de Queso con Guarnición": "Torta de ricota, parmesano y muzzarella",
+    "Milanesa al Pan c/Fritas": "Pan ciabatta, tomate y huevo",
+    "Bastones de Muzarella": "8 unidades con dip de salsa de yogurt y salsa de tomate",
+    "Refresco 600 ml": "Línea Coca",
+    "Vino Catamayor 375 ml": "Reserva tannat · sauvignon blanc",
+    "Baklava": "Capas de masa filo con pistacho y nueces, bañada en almíbar",
+}
+
+
+def _plata_carta(x):
+    return f"$ {x:,.0f}".replace(",", ".")
+
+
+def _sub_bebida(nombre):
+    n = nombre.lower()
+    if any(p in n for p in ("cerveza", "miller", "scheider", "heineken")):
+        return "Cervezas"
+    if any(p in n for p in ("vino", "catamayor")):
+        return "Vinos"
+    return "Refrescos"
+
+
+def _item_carta(nombre, precio, pp, pdesde, phasta):
+    vigente = precio_vigente(precio, pp, pdesde, phasta)
+    if vigente != precio:
+        precio_html = (f'<span class="antes">{_plata_carta(precio)}</span>'
+                       f'<span class="pill">PROMO</span> '
+                       f'{_plata_carta(vigente)}')
+    else:
+        precio_html = _plata_carta(precio)
+    desc = DESCRIPCIONES.get(nombre, "")
+    d = f'<p class="desc">{desc}.</p>' if desc else ""
+    return (f'<div class="item"><div class="fila"><span class="nom">'
+            f'{nombre}</span><span class="puntos"></span>'
+            f'<span class="precio">{precio_html}</span></div>{d}</div>')
+
+
+def generar_carta_html():
+    """Arma la carta completa (HTML autosuficiente) con los datos vivos."""
+    con = db()
+    rows = con.execute(
+        "SELECT nombre, precio, categoria, promo_precio, promo_desde, "
+        "promo_hasta FROM productos ORDER BY nombre").fetchall()
+    con.close()
+    por_cat = {}
+    for nombre, precio, cat, pp, pd, ph in rows:
+        por_cat.setdefault(cat, []).append((nombre, precio, pp, pd, ph))
+
+    etiquetas = {"Entrada": "Entradas", "Armenios": "Platos Armenios",
+                 "Minutas": "Minutas", "Pizzería": "Pizzería",
+                 "Bebida": "Bebidas", "Postre": "Postres"}
+    nav, secciones = [], []
+    for cat in CATEGORIAS:
+        items = por_cat.get(cat)
+        if not items:
+            continue
+        sid = cat.lower().replace("í", "i")
+        titulo = etiquetas.get(cat, cat)
+        nav.append(f'<a href="#{sid}">{titulo}</a>')
+        if cat == "Bebida":
+            grupos = {}
+            for it in items:
+                grupos.setdefault(_sub_bebida(it[0]), []).append(it)
+            cuerpo = ""
+            for sub in ("Refrescos", "Cervezas", "Vinos"):
+                if grupos.get(sub):
+                    cuerpo += f'<h3 class="sub">{sub}</h3>' + "".join(
+                        _item_carta(*it) for it in grupos[sub])
+        else:
+            cuerpo = "".join(_item_carta(*it) for it in items)
+        if cat == "Pizzería":
+            chips = "".join(f'<span class="chip">{g}</span>'
+                            for g in GUSTOS_PIZZA)
+            cuerpo += ('<div class="gustos"><p class="gtit">Elegí los '
+                       f'gustos</p>{chips}<p class="al-pie">Cada gusto suma '
+                       f'{_plata_carta(precio_gusto_extra())} · se marcan al '
+                       'hacer el pedido</p></div>')
+        if cat == "Armenios":
+            cuerpo += ('<p class="al-pie">Guarniciones: fritas · ensalada · '
+                       'rústicas</p>')
+        secciones.append(
+            f'<section id="{sid}"><h2><span class="raya"></span>'
+            f'<span class="stit">{titulo}</span><span class="raya"></span>'
+            f'</h2>{cuerpo}</section>')
+
+    logo_html = marca_agua = ""
+    try:
+        with open(ruta_recurso("icono.png"), "rb") as f:
+            logo64 = base64.b64encode(f.read()).decode()
+        logo_html = (f'<img src="data:image/png;base64,{logo64}" '
+                     'alt="El Horno de Leo">')
+        marca_agua = ('<div class="marca-agua" style="background-image:url('
+                      f'data:image/png;base64,{logo64})"></div>')
+    except OSError:
+        pass
+
+    nombre_local = cfg_get("nombre", "El Horno de Leo")
+    eslogan = cfg_get("eslogan", "")
+    pie_local = " · ".join(x for x in [cfg_get("direccion"),
+                                       cfg_get("telefono")] if x)
+    ahora = datetime.datetime.now()
+    return CARTA_PLANTILLA.format(
+        titulo=nombre_local, logo=logo_html, marca_agua=marca_agua,
+        nombre=nombre_local.upper(), eslogan=eslogan,
+        nav="".join(nav), secciones="".join(secciones),
+        pie_local=(f'<p class="pago">{pie_local}</p>' if pie_local else ""),
+        actualizada=f"{ahora:%d/%m/%Y %H:%M}")
+
+
+def publicar_carta():
+    """Sube la carta a GitHub Pages. Devuelve None si salió bien o el
+    mensaje de error."""
+    token = cfg_get("gh_token", "").strip()
+    if not token:
+        return ("Falta el código de publicación (pestaña Configuración → "
+                "Carta digital).")
+    import urllib.request
+    import urllib.error
+    html = generar_carta_html()
+    cab = {"Authorization": "Bearer " + token,
+           "Accept": "application/vnd.github+json",
+           "User-Agent": "HornoDeLeo"}
+    sha = None
+    try:
+        with urllib.request.urlopen(urllib.request.Request(
+                _API_CARTA, headers=cab), timeout=15) as r:
+            sha = json.loads(r.read()).get("sha")
+    except Exception:
+        pass  # todavía no existe el archivo
+    cuerpo = {"message": "Carta actualizada desde el programa",
+              "content": base64.b64encode(html.encode("utf-8")).decode()}
+    if sha:
+        cuerpo["sha"] = sha
+    try:
+        with urllib.request.urlopen(urllib.request.Request(
+                _API_CARTA, data=json.dumps(cuerpo).encode("utf-8"),
+                headers=cab, method="PUT"), timeout=30):
+            pass
+        return None
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            return ("GitHub rechazó el código de publicación (¿venció o "
+                    "está mal pegado?).")
+        return f"GitHub respondió con error {e.code}."
+    except Exception as e:
+        return f"Sin conexión con GitHub: {e}"
+
+
+def generar_cartelitos_html(cant_mesas):
+    """Hoja imprimible con un cartelito con QR por mesa."""
+    qr = svg_qr(URL_CARTA, modulo=6, borde=2)
+    logo = ""
+    try:
+        with open(ruta_recurso("icono.png"), "rb") as f:
+            logo = ('<img src="data:image/png;base64,'
+                    + base64.b64encode(f.read()).decode() + '">')
+    except OSError:
+        pass
+    tarjetas = "".join(f"""
+  <div class="tarjeta">{logo}
+    <h3>MIRÁ NUESTRA CARTA</h3>
+    <p class="peq">desde tu celular, al instante</p>
+    {qr}
+    <p class="mesa">Escaneá con la cámara · MESA {n}</p>
+  </div>""" for n in range(1, cant_mesas + 1))
+    return f"""<!doctype html><html lang="es"><head><meta charset="utf-8">
+<title>Cartelitos QR — carta</title>
+<style>
+ body{{font-family:Georgia,serif;background:#eee;margin:0;padding:20px}}
+ .hoja{{display:flex;flex-wrap:wrap;gap:14px;justify-content:center}}
+ .tarjeta{{width:300px;background:#faf5e9;border:2px solid #cfc09a;
+  outline:1px solid #cfc09a;outline-offset:5px;border-radius:4px;
+  text-align:center;padding:24px 18px 18px;margin:6px;
+  page-break-inside:avoid}}
+ .tarjeta img{{width:58px;mix-blend-mode:multiply}}
+ h3{{margin:6px 0 2px;letter-spacing:.12em;font-size:1rem;color:#2b2118}}
+ .peq{{font-style:italic;color:#8c2f39;font-size:.82rem;margin:0 0 12px}}
+ svg{{width:180px;height:180px;border:1px solid #cfc09a;border-radius:8px;
+  background:#fff}}
+ .mesa{{margin:10px 0 0;font-size:.8rem;color:#77674f;
+  font-family:system-ui,sans-serif;letter-spacing:.06em}}
+ @media print{{body{{background:#fff}}.tarjeta{{box-shadow:none}}}}
+</style></head><body>
+<p style="text-align:center;font-family:system-ui,sans-serif;font-size:.85rem;
+color:#555">Imprimí esta hoja (Ctrl+P), recortá los cartelitos y pegá uno en
+cada mesa. Todos llevan a la carta: {URL_CARTA}</p>
+<div class="hoja">{tarjetas}</div></body></html>"""
+
+
+# plantilla de la carta (las llaves de CSS van dobles por el .format)
+CARTA_PLANTILLA = """<!doctype html><html lang="es"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Carta — {titulo}</title>
+<style>
+:root{{--papel:#f5efe2;--papel2:#ede3cd;--tinta:#2b2118;--oro:#a0782c;
+ --oro-suave:#cfc09a;--bordo:#8c2f39;--humo:#77674f;color-scheme:light}}
+html{{background:var(--papel);scroll-behavior:smooth}}
+body{{margin:0;color:var(--tinta);
+ font-family:Georgia,"Palatino Linotype","Noto Serif",serif;
+ background:radial-gradient(ellipse at 50% -10%,#fff9ec 0%,transparent 55%),
+  linear-gradient(var(--papel),var(--papel2));min-height:100vh}}
+.marca-agua{{position:fixed;inset:0;pointer-events:none;z-index:0;
+ background-position:center 42%;background-size:min(80vw,420px);
+ background-repeat:no-repeat;opacity:.05;mix-blend-mode:multiply}}
+.hoja{{position:relative;z-index:1;max-width:560px;margin:0 auto;
+ padding:0 20px 48px}}
+header{{text-align:center;padding:34px 0 6px}}
+header img{{width:104px;mix-blend-mode:multiply}}
+h1{{font-size:1.9rem;letter-spacing:.13em;margin:.35em 0 .1em;font-weight:600}}
+.eslogan{{font-style:italic;color:var(--bordo);margin:0;font-size:1.02rem}}
+.orn{{color:var(--oro);letter-spacing:.5em;margin:14px 0 4px;font-size:.9rem}}
+nav{{position:sticky;top:0;z-index:5;display:flex;gap:6px;overflow-x:auto;
+ padding:10px 4px;margin:8px -4px 6px;
+ background:linear-gradient(#f5efe2f2,#f5efe2e6);scrollbar-width:none}}
+nav::-webkit-scrollbar{{display:none}}
+nav a{{flex:none;text-decoration:none;color:var(--bordo);
+ border:1px solid var(--oro-suave);border-radius:999px;padding:7px 15px;
+ font-size:.86rem;letter-spacing:.06em}}
+section{{padding-top:10px}}
+h2{{display:flex;align-items:center;gap:14px;margin:26px 0 6px}}
+h2 .stit{{flex:none;font-size:1.12rem;letter-spacing:.22em;
+ text-transform:uppercase;font-weight:600}}
+h2 .raya{{flex:1;height:1px;
+ background:linear-gradient(90deg,transparent,var(--oro),transparent)}}
+.sub{{font-size:.85rem;letter-spacing:.28em;text-transform:uppercase;
+ color:var(--oro);margin:20px 0 2px;font-weight:600}}
+.item{{padding:9px 0 2px}}
+.fila{{display:flex;align-items:baseline;gap:8px}}
+.nom{{font-variant:small-caps;letter-spacing:.04em;font-size:1.06rem}}
+.puntos{{flex:1;border-bottom:2px dotted var(--oro-suave);
+ transform:translateY(-4px);min-width:24px}}
+.precio{{font-variant-numeric:tabular-nums;white-space:nowrap;
+ font-size:1.02rem}}
+.desc{{margin:2px 0 0;font-style:italic;color:var(--humo);font-size:.9rem;
+ line-height:1.45;max-width:46ch}}
+.antes{{text-decoration:line-through;color:var(--humo);font-size:.88rem;
+ margin-right:6px}}
+.pill{{background:var(--bordo);color:#fff;border-radius:4px;font-size:.62rem;
+ letter-spacing:.12em;padding:2.5px 6px;vertical-align:2px;margin-right:4px;
+ font-family:system-ui,sans-serif;font-weight:700}}
+.al-pie{{font-style:italic;color:var(--humo);font-size:.88rem;
+ text-align:center;margin:14px 0 0}}
+.gustos{{margin-top:16px;border:1px solid var(--oro-suave);border-radius:10px;
+ padding:14px 16px 16px;text-align:center;background:#fbf6ea66}}
+.gtit{{margin:0 0 10px;letter-spacing:.24em;text-transform:uppercase;
+ font-size:.8rem;color:var(--oro);font-weight:600}}
+.chip{{display:inline-block;border:1px solid var(--oro-suave);
+ border-radius:999px;padding:5px 13px;margin:3px 2px;font-size:.88rem;
+ font-variant:small-caps;letter-spacing:.05em}}
+footer{{margin-top:40px;text-align:center}}
+.cita{{font-style:italic;color:var(--humo);font-size:.95rem;max-width:40ch;
+ margin:0 auto;line-height:1.55}}
+.pago{{font-variant:small-caps;letter-spacing:.14em;margin:18px 0 4px;
+ font-size:.98rem}}
+.vivo{{color:var(--humo);font-size:.78rem;margin-top:4px}}
+</style></head><body>
+{marca_agua}
+<div class="hoja">
+ <header>{logo}
+  <h1>{nombre}</h1>
+  <p class="eslogan">{eslogan}</p>
+  <p class="orn">&#10087; &#10086; &#10087;</p>
+ </header>
+ <nav>{nav}</nav>
+ {secciones}
+ <footer>
+  <p class="orn">&#10087; &#10086; &#10087;</p>
+  <p class="cita">Cada plato refleja la tradición de la cocina armenia,
+  elaborada con dedicación y sabores auténticos.</p>
+  <p class="pago">Efectivo · MercadoPago · Transferencia</p>
+  {pie_local}
+  <p class="vivo">Carta actualizada el {actualizada}</p>
+ </footer>
+</div></body></html>"""
 
 
 # ---------------------------------------------------------------- clientes (delivery)
@@ -679,7 +1139,8 @@ def deps_comandera():
             "ancho": ANCHO_TICKET, "precio_vigente": precio_vigente,
             "gustos_pizza": GUSTOS_PIZZA, "lleva_gustos": lleva_gustos,
             "gustos_incluidos": gustos_incluidos,
-            "precio_gusto_extra": precio_gusto_extra}
+            "precio_gusto_extra": precio_gusto_extra,
+            "carta_html": generar_carta_html}
 
 
 # ---------------------------------------------------------------- IP fija (Windows)
@@ -2674,6 +3135,7 @@ class App(tk.Tk):
                                  parent=self)
             return
         cfg_set("precio_gusto", f"{precio:g}")
+        self.publicar_carta_fondo()
         messagebox.showinfo(
             "Gustos", f"Listo: cada gusto de pizzería suma {fmt(precio)}.",
             parent=self)
@@ -2809,6 +3271,7 @@ class App(tk.Tk):
         self.var_p_pdesde.set("")
         self.var_p_phasta.set("")
         self._cargar_productos()
+        self.publicar_carta_fondo()
 
     def _producto_editar(self):
         sel = self.tree_productos.selection()
@@ -2827,6 +3290,7 @@ class App(tk.Tk):
         con.commit()
         con.close()
         self._cargar_productos()
+        self.publicar_carta_fondo()
 
     def _producto_eliminar(self):
         sel = self.tree_productos.selection()
@@ -2840,6 +3304,7 @@ class App(tk.Tk):
         con.commit()
         con.close()
         self._cargar_productos()
+        self.publicar_carta_fondo()
 
     # ================================================= TAB VENTAS
 
@@ -3199,9 +3664,41 @@ class App(tk.Tk):
         ttk.Label(fila_up, text=f"Versión instalada: {VERSION}",
                   foreground=COL_MUTED).pack(side="right")
 
+        # --- carta digital (QR para los clientes)
+        car = ttk.Labelframe(f, text=" Carta digital para los clientes (QR) ",
+                             padding=12)
+        car.grid(row=5, column=0, sticky="new", padx=(0, 10), pady=(10, 0))
+        car.columnconfigure(1, weight=1)
+        ttk.Label(car, text="Dirección pública (el QR lleva acá):")\
+            .grid(row=0, column=0, columnspan=2, sticky="w")
+        ent_carta = ttk.Entry(car)
+        ent_carta.insert(0, URL_CARTA)
+        ent_carta.configure(state="readonly")
+        ent_carta.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(2, 6))
+        ttk.Label(car, text="Código de publicación (token de GitHub):")\
+            .grid(row=2, column=0, columnspan=2, sticky="w")
+        self.var_gh_token = tk.StringVar(value=cfg_get("gh_token", ""))
+        ttk.Entry(car, textvariable=self.var_gh_token, show="•")\
+            .grid(row=3, column=0, columnspan=2, sticky="ew", pady=(2, 6))
+        fila_car = ttk.Frame(car)
+        fila_car.grid(row=4, column=0, columnspan=2, sticky="ew")
+        ttk.Button(fila_car, text="💾  Guardar",
+                   command=self._guardar_carta_cfg).pack(side="left")
+        ttk.Button(fila_car, text="🌐  Publicar carta ahora",
+                   command=self._publicar_carta_manual)\
+            .pack(side="left", padx=8)
+        ttk.Button(fila_car, text="🖨  Cartelitos QR",
+                   command=self._cartelitos_qr).pack(side="left")
+        ttk.Label(car, foreground=COL_MUTED, wraplength=380, justify="left",
+                  text="La carta se vuelve a publicar sola cada vez que "
+                       "cambiás productos, precios o promociones. Los "
+                       "clientes la abren con el QR desde cualquier lado, "
+                       "sin el WiFi del local.")\
+            .grid(row=5, column=0, columnspan=2, sticky="w", pady=(6, 0))
+
         # --- mesas y mozos
         mesas = ttk.Labelframe(f, text=" Mesas y mozos ", padding=12)
-        mesas.grid(row=1, column=1, rowspan=4, sticky="nsew")
+        mesas.grid(row=1, column=1, rowspan=5, sticky="nsew")
         mesas.columnconfigure(0, weight=1)
         mesas.rowconfigure(2, weight=1)
 
@@ -3265,6 +3762,41 @@ class App(tk.Tk):
         self.title("Gestión — " + cfg_get("nombre", "Restaurante")
                    + f"  ·  v{VERSION}")
         messagebox.showinfo("Configuración", "Datos guardados.", parent=self)
+
+    def _guardar_carta_cfg(self):
+        cfg_set("gh_token", self.var_gh_token.get().strip())
+        messagebox.showinfo("Carta digital", "Guardado.", parent=self)
+
+    def _publicar_carta_manual(self):
+        cfg_set("gh_token", self.var_gh_token.get().strip())
+        error = publicar_carta()
+        if error:
+            messagebox.showerror("Carta digital",
+                                 f"No se pudo publicar:\n{error}", parent=self)
+        else:
+            messagebox.showinfo(
+                "Carta digital",
+                "Carta publicada. En 1 o 2 minutos se ve actualizada en:\n"
+                + URL_CARTA, parent=self)
+
+    def publicar_carta_fondo(self):
+        """Re-publica la carta sin molestar (al cambiar productos/promos)."""
+        if not cfg_get("gh_token", "").strip():
+            return  # sin código de publicación no hay nada que hacer
+        threading.Thread(target=publicar_carta, daemon=True).start()
+
+    def _cartelitos_qr(self):
+        cant = self._contar_mesas()
+        ruta = os.path.join(APP_DIR, "cartelitos_qr.html")
+        with open(ruta, "w", encoding="utf-8") as f:
+            f.write(generar_cartelitos_html(cant))
+        import webbrowser
+        webbrowser.open("file://" + ruta)
+        messagebox.showinfo(
+            "Cartelitos QR",
+            f"Se abrió en el navegador una hoja con {cant} cartelitos "
+            "(uno por mesa) para imprimir y recortar.\n\n"
+            f"Quedó guardada en:\n{ruta}", parent=self)
 
     def _guardar_actualizaciones(self, avisar=True):
         cfg_set("update_auto", "1" if self.var_up_auto.get() else "0")
@@ -3399,6 +3931,7 @@ class App(tk.Tk):
         con.commit()
         con.close()
         self._cargar_productos()
+        self.publicar_carta_fondo()
         messagebox.showinfo("Carta", "Carta recargada.", parent=self)
 
     def _cargar_mesas_cfg(self):

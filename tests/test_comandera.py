@@ -230,6 +230,13 @@ code, _ = POST("/api/pedido", {"mesa": 6, "mozo": "Caro", "items": [
 assert code == 400
 print("OK pizzería: gustos desde la comandera, extra cobrado y validado")
 
+# --- v2.0: la carta para clientes también se sirve en el WiFi local
+with urllib.request.urlopen(BASE + "/carta", timeout=5) as resp:
+    cuerpo = resp.read().decode("utf-8")
+    assert resp.status == 200
+assert "Shawarma de Pollo" in cuerpo and "Pizzería" in cuerpo
+print("OK /carta local: la carta de los clientes responde en el WiFi")
+
 # --- IP fija en Windows: máscara y contenido de los .bat
 assert r.mascara_desde_prefijo(24) == "255.255.255.0"
 assert r.mascara_desde_prefijo(25) == "255.255.255.128"

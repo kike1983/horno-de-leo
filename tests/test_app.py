@@ -490,6 +490,53 @@ assert r.precio_gusto_extra() == 95   # conservó el precio del producto viejo
 r.cfg_set("precio_gusto", "90")
 print("OK migración pizzería: productos viejos afuera, precio conservado")
 
+# ================================================= v2.0: carta digital y QR
+
+# QR: idéntico a la matriz verificada con segno y el lector de OpenCV
+esperado = open(os.path.join(os.path.dirname(__file__),
+                             "qr_hola_esperado.txt")).read().split()
+m = r.matriz_qr("hola")
+assert ["".join(str(b) for b in fila) for fila in m] == esperado
+assert len(r.matriz_qr("x" * 42)) == 29     # versión 3, justo el límite
+try:
+    r.matriz_qr("x" * 43)
+    assert False, "debió rechazar 43 caracteres"
+except ValueError:
+    pass
+assert "<svg" in r.svg_qr("hola") and "<rect" in r.svg_qr("hola")
+assert len(r.URL_CARTA) <= 42               # el QR de las mesas tiene que entrar
+print("OK QR propio: matriz verificada, límites y SVG")
+
+# carta digital: datos vivos, promos y secciones
+con = r.db()
+con.execute("UPDATE productos SET promo_precio=350, promo_desde='', "
+            "promo_hasta='' WHERE nombre='Shawarma de Pollo'")
+con.commit(); con.close()
+carta = r.generar_carta_html()
+assert "Shawarma de Pollo" in carta and "Baklava" in carta
+assert "PROMO" in carta and "350" in carta       # promo activa visible
+assert "Platos Armenios" in carta and "Pizzería" in carta
+assert "Cervezas" in carta and "Vinos" in carta  # subgrupos de bebidas
+assert "Rúcula" in carta                          # gustos de pizzería
+assert "data:image/png;base64" in carta           # logo incrustado
+con = r.db()
+con.execute("UPDATE productos SET promo_precio=0 "
+            "WHERE nombre='Shawarma de Pollo'")
+con.commit(); con.close()
+assert "PROMO" not in r.generar_carta_html()      # sin promo, sin insignia
+print("OK carta digital: productos, promos, secciones y logo")
+
+# cartelitos: uno por mesa, con el QR a la dirección pública
+hoja = r.generar_cartelitos_html(3)
+assert hoja.count("MIRÁ NUESTRA CARTA") == 3
+assert "MESA 3" in hoja and "<svg" in hoja
+print("OK cartelitos QR imprimibles")
+
+# publicar sin código configurado avisa en vez de explotar
+r.cfg_set("gh_token", "")
+assert "publicación" in r.publicar_carta()
+print("OK publicar sin token devuelve aviso claro")
+
 # ================================================= v1.6: actualizador
 
 import json, threading, functools

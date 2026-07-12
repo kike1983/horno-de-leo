@@ -1,5 +1,5 @@
 {
-  "version": "1.9.1",
+  "version": "2.0",
   "archivos": ["restaurante.py", "comandera.py", "icono.png", "icono.ico"],
-  "novedades": "Pizzería simplificada: se marcan los gustos directo sobre la pizzeta c/muzza o el tere (salieron de la carta 'Pizzeta 1 Gusto' y 'Gusto Extra'); el precio de cada gusto se cambia en la pestaña Productos. Arreglado el diálogo de gustos al hacer doble clic en la PC."
+  "novedades": "Carta digital para los clientes: se abre desde el QR de la mesa sin necesidad del WiFi del local (queda publicada en internet y se actualiza sola al cambiar precios, productos o promociones). Botón de cartelitos QR imprimibles, uno por mesa, en Configuración."
 }
